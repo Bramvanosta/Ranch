@@ -1,0 +1,40 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+# pnpm puts its store in the checkout when $HOME is on another filesystem (CI containers)
+.pnpm-store
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Claude AI / BMAD scratch (kept locally, not versioned in app source tree)
+.claude/
+
+# Rust target
+src-tauri/target/
+
+# Local mise state
+.mise.local.toml
+
+# Playwright (pnpm check:overflow)
+test-results/
+playwright-report/
+e2e/.overflow-report.json

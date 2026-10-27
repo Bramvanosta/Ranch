@@ -1,0 +1,174 @@
+[package]
+name = "ranch"
+version = "0.1.0"
+description = "Local-first BullMQ desktop client"
+authors = ["Bram van Osta"]
+edition = "2021"
+license = "MIT"
+# The `ranch-mcp` binary sits alongside the main `ranch` GUI bin.
+# `default-run` keeps `cargo run` (and `pnpm tauri:dev` via its
+# tauri.conf.json `beforeDevCommand`) targeting the GUI without
+# requiring an explicit `--bin ranch` flag.
+default-run = "ranch"
+
+[lib]
+# The `_lib` suffix avoids name collision with the bin on Windows
+# (https://github.com/rust-lang/cargo/issues/8519).
+name = "ranch_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# Standalone MCP server binary. Invoked over stdio by
+# Claude Desktop / Cursor (the auto-installers register it there).
+#
+# DECLARED BEFORE `ranch` ON PURPOSE: the Tauri bundler code-signs the
+# binaries in this order, and macOS refuses to sign the app's main executable
+# while another executable next to it is unsigned ("code object is not signed
+# at all — In subcomponent: …/ranch-mcp", v0.2.0-rc.4). The second binary has
+# to be signed first.
+[[bin]]
+name = "ranch-mcp"
+path = "src/bin/ranch_mcp.rs"
+# Talks to the OS keychain.
+required-features = ["desktop"]
+
+# The desktop app (explicit so it can name the feature it needs).
+[[bin]]
+name = "ranch"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+# The HTTP shell: the same core and the same `*_inner` command
+# functions as the desktop app, served over HTTP with the built frontend.
+# Built WITHOUT the default features, so neither Tauri / WebKit nor the OS
+# keychain (libdbus on Linux) is linked:
+#   cargo build --release --no-default-features --features server --bin ranch-server
+[[bin]]
+name = "ranch-server"
+# Not under `src/bin/`: the Tauri bundler adds every file it finds there to the
+# desktop bundle, and fails on a binary the desktop build does not produce.
+path = "src/server/main.rs"
+required-features = ["server"]
+
+# One core, two shells.
+#   desktop (default): Tauri, its plugins, tauri-specta, the OS keychain.
+#   server:            axum.
+# `core/` and every `*_inner` command function compile with neither.
+[features]
+default = ["desktop"]
+desktop = [
+    "dep:tauri",
+    "dep:tauri-build",
+    "dep:tauri-plugin-opener",
+    "dep:tauri-plugin-global-shortcut",
+    "dep:tauri-plugin-deep-link",
+    "dep:tauri-plugin-notification",
+    "dep:tauri-plugin-single-instance",
+    "dep:tauri-plugin-updater",
+    "dep:tauri-specta",
+    "dep:keyring",
+    "dep:objc2",
+]
+server = [
+    "dep:axum",
+    "dep:tower-http",
+    "dep:chacha20poly1305",
+    "dep:subtle",
+    "dep:sha2",
+    # OIDC sign-in (Pocket ID, Authentik, Keycloak…)
+    "dep:reqwest",
+    "dep:jsonwebtoken",
+    "dep:hmac",
+]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"], optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-global-shortcut = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Async runtime + sqlx tokio integration.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "fs", "signal", "time", "net", "io-util"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "uuid", "chrono"] }
+# OS keychain — pure-Rust crypto on Linux (no system OpenSSL), native backends mac/Windows.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"], optional = true }
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Typed Rust↔TS bridge codegen. The bindings.ts file is exported at app launch in debug builds
+# and committed to git so frontend typecheck does not require a Rust build.
+tauri-specta = { version = "=2.0.0-rc.24", features = ["derive", "typescript"], optional = true }
+specta = { version = "=2.0.0-rc.24", features = ["derive"] }
+specta-typescript = "=0.0.11"
+# Async Redis client with rustls TLS. Features:
+#   - `tokio-rustls-comp` pulls rustls (no system OpenSSL — matches sqlx's choice)
+#   - `connection-manager` enables auto-reconnect (used by ConnectionActor;
+#     `test_connection` uses one-shot connections).
+# NOTE: redis-rs reached stable 1.x in 2026 (it was 0.27 before); the API
+# surface we use (Client::open, get_multiplexed_async_connection, cmd().query_async)
+# is unchanged across the 0.27 → 1.x transition.
+redis = { version = "1", features = ["tokio-rustls-comp", "connection-manager"] }
+# RFC-3986 URL parsing for `parse_redis_url` — strict where ad-hoc regex is fragile.
+url = "2"
+# Sub-crate of `url` — exposed standalone for decoding percent-encoded credential
+# values (Upstash and others ship URLs like `redis://:p%40ss@host`).
+percent-encoding = "2"
+# Parse + validate user-pasted CA PEM blocks before handing them to
+# redis-rs's TlsCertificates. Pure-Rust, zero deps beyond `pki-types`.
+rustls-pemfile = "2"
+# CancellationToken for clean per-actor shutdown.
+# Pure-Rust, ~zero overhead, the canonical Tokio cancellation primitive.
+tokio-util = "0.7"
+# CSV export path for the audit log viewer's Export button.
+# Pure-Rust, MIT/Apache-2.0, the canonical CSV crate in the Rust ecosystem.
+csv = "1"
+# pure-Rust SSH client for the bastion-tunnel path.
+# v0.50+; 0.60.x is the current stable. Pulled directly (not via
+# `async-ssh2-tokio`) to keep control of the host-key and channel handling.
+# `russh-keys` is re-exported as `russh::keys` from 0.51+, so no separate dep.
+#
+# `default-features = false` to drop aws-lc-rs (which pulls aws-lc-sys, a C
+# library) — replaced with the `ring` feature for a pure-Rust crypto backend
+# that matches sqlx-rustls + redis-tokio-rustls + rustls posture. `flate2` and
+# `rsa` are kept from the default set; `flate2` enables ssh-compression, `rsa`
+# enables RSA pubkey auth (still the most common key type in the wild).
+russh = { version = "0.60", default-features = false, features = ["ring", "flate2", "rsa"] }
+rmcp = { version = "1.6", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
+schemars = { version = "1.0", features = ["chrono04"] }
+tauri-plugin-deep-link = { version = "2.4.9", optional = true }
+tauri-plugin-notification = { version = "2.3.3", optional = true }
+base64 = "0.22"
+croner = "4.0.0"
+chrono-tz = "0.10.4"
+
+# `server` feature only.
+axum = { version = "0.8", optional = true }
+tower-http = { version = "0.6", features = ["fs", "compression-gzip", "trace"], optional = true }
+# Secrets at rest in the data volume (there is no OS keychain in a container).
+chacha20poly1305 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
+# Constant-time comparison of the Basic-auth credentials.
+subtle = { version = "2", optional = true }
+# OIDC: discovery / token / JWKS requests (rustls, like everything else here),
+# ID-token verification, and the HMAC that signs the session cookie.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+jsonwebtoken = { version = "9", optional = true }
+hmac = { version = "0.12", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+# Drives the HTTP shell's router in tests without opening a socket.
+tower = { version = "0.5", features = ["util"] }
+
+# Attach a window as a native tab (`addTabbedWindow:ordered:`).
+# Already in the tree through tauri; listed so the code can name it.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }

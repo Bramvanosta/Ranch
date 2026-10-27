@@ -1,0 +1,23 @@
+{
+  "queueRef": { "prefix": "bull", "name": "image-processing" },
+  "jobId": "1024",
+  "fields": {
+    "name": "resize-image",
+    "data": "{\"url\":\"s3://bucket/photo.jpg\",\"width\":800}",
+    "opts": "{\"attempts\":1,\"removeOnComplete\":false}",
+    "attemptsMade": "1",
+    "timestamp": "1672531000000",
+    "processedOn": "1672531001000",
+    "finishedOn": "1672531003500",
+    "returnvalue": "{\"resizedUrl\":\"s3://bucket/photo-800.jpg\",\"sizeKb\":42}"
+  },
+  "expected": {
+    "name": "resize-image",
+    "state": "completed",
+    "attemptsMade": 1,
+    "timestamp": 1672531000000,
+    "finishedOn": 1672531003500,
+    "stacktraceCount": 0,
+    "returnValuePreview": { "resizedUrl": "s3://bucket/photo-800.jpg" }
+  }
+}

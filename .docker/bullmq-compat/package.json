@@ -1,0 +1,12 @@
+{
+  "name": "ranch-bullmq-compat",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Real BullMQ workers (v5 and v6) that process what Ranch writes: the proof that Ranch's writes are BullMQ-exact.",
+  "license": "MIT",
+  "dependencies": {
+    "bullmq5": "npm:bullmq@^5",
+    "bullmq6": "npm:bullmq@^6"
+  }
+}

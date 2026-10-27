@@ -1,0 +1,19 @@
+{
+  "queueRef": { "prefix": "bull", "name": "email" },
+  "jobId": "1",
+  "fields": {
+    "name": "send-email",
+    "data": "{\"to\":\"alice@example.com\",\"subject\":\"Welcome\"}",
+    "opts": "{\"attempts\":3,\"backoff\":{\"type\":\"exponential\",\"delay\":1000}}",
+    "attemptsMade": "0",
+    "timestamp": "1672531200000"
+  },
+  "expected": {
+    "name": "send-email",
+    "state": "waiting",
+    "attemptsMade": 0,
+    "timestamp": 1672531200000,
+    "stacktraceCount": 0,
+    "dataPreview": { "to": "alice@example.com" }
+  }
+}

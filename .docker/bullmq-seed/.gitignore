@@ -1,0 +1,4 @@
+# BullMQ seeder runs `npm install` inside the container; ignore the
+# generated install output so it doesn't pollute git.
+node_modules/
+package-lock.json

@@ -1,0 +1,19 @@
+# Keep the build context to what the Dockerfile copies.
+**/node_modules
+.pnpm-store
+**/target
+dist
+.git
+.github
+.claude
+.docker
+_bmad
+_bmad-output
+docs
+src-tauri/gen
+src-tauri/icons
+src-tauri/capabilities
+src-tauri/tests
+src-tauri/tauri.conf.json
+*.md
+!README.md

@@ -1,0 +1,31 @@
+# Node, pnpm and the dependencies, the same way in every job.
+# pnpm comes from corepack, at the version of package.json's `packageManager`.
+name: Node and pnpm
+description: Node 24, pnpm through corepack, the pnpm store cached, `pnpm install --frozen-lockfile`.
+inputs:
+  setup-node:
+    description: Install Node 24 first. "false" in a container that already has Node.
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - if: inputs.setup-node == 'true'
+      uses: actions/setup-node@v5
+      with:
+        node-version: 24
+        # setup-node would cache with pnpm before corepack has installed it.
+        package-manager-cache: false
+    - id: pnpm
+      shell: bash
+      env:
+        COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+      run: |
+        corepack enable
+        echo "store=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      with:
+        path: ${{ steps.pnpm.outputs.store }}
+        key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: pnpm-${{ runner.os }}-${{ runner.arch }}-
+    - shell: bash
+      run: pnpm install --frozen-lockfile

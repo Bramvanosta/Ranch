@@ -1,0 +1,9 @@
+# Toolchain versions pinned for Ranch.
+# Every contributor and CI uses these exact versions.
+# Install with: mise install
+#
+# Bump rust/node by editing here, run `mise install`, commit the change.
+
+[tools]
+rust = "latest"
+node = "24"

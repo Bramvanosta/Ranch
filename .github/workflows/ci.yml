@@ -1,0 +1,169 @@
+# CI: the gate of every pull request, and of main.
+#  - frontend   Biome, types, unit tests, no credentials in SQL migrations
+#  - overflow   no clipped or overlapping text, in Playwright's own image
+#  - server     the Rust core with the `server` feature (the Docker image's binary)
+#  - desktop    the Rust core with the `desktop` feature (Tauri), integration tests included
+#  - image      pull requests only: the server image, built and smoke-tested
+#               (on main, image.yml builds, tests and pushes it)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A new push to a pull request makes its previous run moot; main runs to the end.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # No debug info in CI builds: the desktop job links some thirty test binaries,
+  # each carrying all of Tauri — with debug info the linkers run out of memory
+  # (`ld terminated with signal 9`); without it the builds are also faster.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/pnpm
+      - name: No credentials in SQL migrations
+        run: bash scripts/check-no-creds-in-sql.sh
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit tests
+        run: pnpm test
+
+  playwright-version:
+    # The overflow job's image must carry the browsers of the @playwright/test
+    # that pnpm installs: its tag is read from package.json, never typed twice.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: package.json
+          sparse-checkout-cone-mode: false
+      - id: read
+        run: |
+          set -eu
+          V=$(node -p 'require("./package.json").devDependencies["@playwright/test"]')
+          # An image tag is one exact version: a range would not name one.
+          echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "@playwright/test must be pinned to an exact version (found \"$V\")"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+  overflow:
+    # NFR42 — no clipped or overlapping text on any screen of Ranch web.
+    # Playwright's own image carries Chromium and its system libraries.
+    needs: playwright-version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: mcr.microsoft.com/playwright:v${{ needs.playwright-version.outputs.version }}-noble
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/pnpm
+        with:
+          setup-node: "false"
+      - name: Overflow check
+        run: pnpm check:overflow
+        env:
+          CI: "1"
+
+  server:
+    # The HTTP shell (the Docker image's binary): built and tested WITHOUT the
+    # desktop feature — no WebKit, no libdbus, nothing to apt-get.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v5
+      # The latest stable, like mise.toml's `rust = "latest"`.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: server
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy (server)
+        run: cargo clippy --locked --no-default-features --features server --lib --bins -- -D warnings
+      - name: Tests (server) — includes the command-parity contract
+        run: cargo test --locked --no-default-features --features server --lib
+
+  desktop:
+    # The desktop app's backend: everything, including the UI/MCP parity
+    # contract and the integration tests. The slow one.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tauri system dependencies
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: desktop
+      - name: Clippy (desktop)
+        run: |
+          # Tauri embeds the frontend bundle at compile time: any index.html will do here.
+          mkdir -p ../dist && echo '<!doctype html>' > ../dist/index.html
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests (desktop)
+        run: |
+          # Dependencies and the library at full speed, then the integration
+          # tests three at a time: linking them all at once can run a runner
+          # out of memory.
+          cargo test --locked --lib --no-run
+          cargo test --locked --no-run -j 3
+          cargo test --locked
+
+  image:
+    # Pull requests only: on main, image.yml builds, tests and pushes.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          # A plain single-platform image in the local daemon, for the smoke test.
+          provenance: false
+          tags: ranch:ci
+          # Layers shared with image.yml: a pull request reuses main's.
+          cache-from: type=gha,scope=server-image
+          cache-to: type=gha,scope=server-image,mode=max
+      - name: Smoke test
+        run: sh scripts/smoke-test-image.sh ranch:ci
