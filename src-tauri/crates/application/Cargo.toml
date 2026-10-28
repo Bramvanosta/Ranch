@@ -1,0 +1,20 @@
+# What Ranch does, whatever stores its data: the catalogue of operations,
+# the write pipeline and the ports. What this manifest lists is what the
+# application may name: the domain, and no store (sqlx, redis), no shell
+# (tauri), no wire format (specta, schemars), no layer above it. See
+# docs/architecture.md (The dependency rule).
+[package]
+name = "ranch-application"
+description = "Ranch's operations, the rules they follow and the ports they reach the outside through"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+ranch-domain = { workspace = true }
+async-trait = { workspace = true }
+# `Clock` answers a `DateTime<Utc>`.
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

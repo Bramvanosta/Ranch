@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { margin: 0; font: 14px/1.4 sans-serif; }
+      .box { width: 120px; margin: 4px 0; }
+      .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .hidden-x { overflow-x: hidden; white-space: nowrap; }
+      .nowrap { white-space: nowrap; }
+      .clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
+      .sr-only {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+      }
+      .scroller { width: 120px; overflow-x: auto; }
+      .wide { width: 4000px; }
+    </style>
+  </head>
+  <body>
+    <!-- Must be reported -->
+    <div id="bad-ellipsis" class="box truncate">clip-ellipsis a label far too long for a box this narrow</div>
+    <div id="bad-hidden" class="box hidden-x">clip-hidden a label far too long for a box this narrow</div>
+    <div id="bad-clamp" class="box clamp">clip-clamp a label far too long to fit on one single line in the box</div>
+    <div id="bad-spill" class="box nowrap"><span>spill a label far too long for a box this narrow</span></div>
+    <div id="bad-outside" class="wide">outside a block wider than any window</div>
+    <div class="box truncate">dup a repeated truncated label far too long for this box</div>
+    <div class="box truncate">dup a repeated truncated label far too long for this box</div>
+
+    <!-- Must stay silent -->
+    <div class="box truncate">ok short</div>
+    <div class="box">ok-wraps a long label that wraps normally onto several lines</div>
+    <span class="sr-only">ok-sr-only a visually hidden label far too long for its 1px box</span>
+    <div class="box truncate" style="display: none">ok-display-none a label far too long</div>
+    <div class="box truncate" style="visibility: hidden">ok-visibility a label far too long</div>
+    <div class="box truncate" style="opacity: 0">ok-opacity a label far too long for the box</div>
+    <div class="scroller"><div class="wide">ok-scroll content inside a scroll container</div></div>
+    <svg aria-hidden="true" width="100" height="20"><text x="0" y="15">ok-svg a label drawn in an svg far too long</text></svg>
+    <div class="box truncate"><svg aria-hidden="true" width="300" height="10"></svg></div>
+  </body>
+</html>

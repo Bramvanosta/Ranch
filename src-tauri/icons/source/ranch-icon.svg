@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Ranch app icon. Body on the macOS grid (824 inside 1024), mark at 56 % of the body. -->
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185.4" fill="#17181c" filter="url(#shadow)"/>
+  <rect x="102" y="102" width="820" height="820" rx="183.4" fill="none" stroke="#ffffff" stroke-opacity="0.1" stroke-width="4"/>
+  <g transform="translate(281.3 281.3) scale(14.42)"><rect x="11" y="3.5" width="18" height="6.5" rx="3.25" fill="#f28c38"/><rect x="3" y="12.75" width="18" height="6.5" rx="3.25" fill="#ececee"/><rect x="3" y="22" width="18" height="6.5" rx="3.25" fill="#ececee"/></g>
+</svg>

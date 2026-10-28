@@ -1,0 +1,79 @@
+# Local services for Ranch development.
+#
+# Usage:
+#
+#   docker compose --profile redis up -d                 # plain Redis on :6390
+#   docker compose --profile tls up -d                   # TLS Redis on :6391
+#   docker compose --profile redis --profile bullmq up   # plain + BullMQ seed
+#   docker compose --profile all up -d                   # everything
+#   docker compose down                                  # stop everything
+#
+# Profiles are opt-in: `docker compose up` (no profile) starts NOTHING. Pick
+# what you need.
+#
+# Use cases:
+#   - `redis` profile  →  the live test suites (RANCH_LOCAL_REDIS=1, see
+#                         docs/testing.md) and a Redis to point Ranch at.
+#   - `tls` profile    →  manual smoke test (TLS connection, paste
+#                         `.docker/tls/ca.crt` into the Custom CA field).
+#                         Requires running `scripts/gen-test-tls-certs.sh`
+#                         once before first start.
+#   - `bullmq` profile →  Pre-loads test BullMQ queues + jobs so the screens
+#                         have something to render. Cheap to run; safe to
+#                         leave running.
+
+services:
+  # Plain Redis on host port 6390 (NOT 6379, that's reserved for whatever
+  # other dev Redis you might be running, e.g. another project's compose
+  # stack). Inside the container, Redis listens on the standard 6379; only
+  # the host-side port is shifted.
+  #
+  # The live test suites use it by default (RANCH_REDIS_PORT=6390):
+  #   RANCH_LOCAL_REDIS=1 cargo test --workspace --test '*_live' -- --include-ignored
+  redis:
+    image: redis:7-alpine
+    container_name: ranch-redis
+    ports:
+      - "127.0.0.1:6390:6379"
+    profiles: ["redis", "all"]
+    restart: unless-stopped
+
+  redis-tls:
+    image: redis:7-alpine
+    container_name: ranch-redis-tls
+    # Disable the plain TCP port (6379) and only listen on TLS (6380).
+    # `--tls-auth-clients no` allows Ranch to connect without a client cert
+    # (Ranch does not do mTLS). Host-side port shifted to 6391 to avoid
+    # collisions with other dev Redis instances.
+    command: >
+      redis-server
+      --port 0
+      --tls-port 6380
+      --tls-cert-file /tls/server.crt
+      --tls-key-file /tls/server.key
+      --tls-ca-cert-file /tls/ca.crt
+      --tls-auth-clients no
+    volumes:
+      - ./.docker/tls:/tls:ro
+    ports:
+      - "127.0.0.1:6391:6380"
+    profiles: ["tls", "all"]
+    restart: unless-stopped
+
+  # One-shot seeder. Adds BullMQ queues + jobs to the `redis` service so the
+  # screens have realistic data to render. Idempotent: running again
+  # adds more jobs but doesn't break anything (job IDs auto-increment).
+  bullmq-seed:
+    image: node:20-alpine
+    container_name: ranch-bullmq-seed
+    depends_on:
+      redis:
+        condition: service_started
+    working_dir: /app
+    volumes:
+      - ./.docker/bullmq-seed:/app
+    command: sh -c "npm install --no-progress --silent && node seed.mjs"
+    environment:
+      REDIS_URL: redis://redis:6379
+    profiles: ["bullmq", "all"]
+    restart: "no"

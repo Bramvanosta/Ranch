@@ -1,0 +1,273 @@
+# Desktop apps and the GitHub release, from a version tag.
+#  - tag push vX.Y.Z       → release
+#  - tag push vX.Y.Z-rc.N  → pre-release
+# (The server image of the same tag is built by image.yml.)
+#
+# `release` creates the release first; the Linux and macOS jobs then build in
+# parallel, each attaching its own files and checksums (`gh release upload
+# --clobber`: a re-run replaces what it uploaded), then publishing its update
+# to the feed (scripts/publish-update.mjs, docs/releasing.md).
+#
+# Secrets (Settings → Secrets and variables → Actions), all optional:
+#  - TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD): signs the updater archives;
+#    without it the bundles are built without them and no update is published
+#  - APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#    APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID: sign and notarize the macOS app
+#  - HOMEBREW_TAP_DEPLOY_KEY: pushes the macOS cask to Bramvanosta/homebrew-tap
+# The release and the feed use the job's GITHUB_TOKEN.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# The job token can write releases: it is handed only to the steps that call
+# `gh` or publish the update, never to the builds (pnpm install, cargo build
+# scripts, the bundler).
+env:
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Version
+        id: version
+        # The tag is the version; anything but vX.Y.Z or vX.Y.Z-<pre> stops the release here.
+        run: node scripts/set-version.mjs "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+      - name: Release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        # The summary paragraph of the version's CHANGELOG section (the text
+        # the update dialog shows), then how to install.
+        run: |
+          node --input-type=module > notes.md <<'EOF'
+          import { existsSync, readFileSync } from "node:fs"
+          import { extractNotes } from "./scripts/publish-update.mjs"
+
+          const version = process.env.VERSION
+          const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_REF_NAME } = process.env
+          const changelog = `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md`
+          const summary = existsSync("CHANGELOG.md")
+            ? extractNotes(readFileSync("CHANGELOG.md", "utf8"), version)
+            : null
+          const lines = [
+            ...(summary ? [summary, ""] : []),
+            "## Install",
+            "",
+            "**macOS** (Apple Silicon and Intel): open the `.dmg` and drag Ranch into Applications.",
+            "",
+            "**Linux** (x86_64):",
+            "",
+            "```bash",
+            "sudo apt install ./Ranch_*_amd64.deb      # Debian, Ubuntu",
+            "sudo dnf install ./Ranch-*.x86_64.rpm     # Fedora, RHEL",
+            "chmod +x Ranch_*.AppImage && ./Ranch_*.AppImage",
+            "```",
+            "",
+            "**Ranch server** (Docker):",
+            "",
+            "```bash",
+            `docker pull ghcr.io/bramvanosta/ranch:${version}`,
+            "```",
+            "",
+            "The files below appear as each platform finishes building, each with its `SHA256SUMS-<platform>.txt`.",
+            `What changed: [CHANGELOG.md](${changelog}).`,
+          ]
+          console.log(lines.join("\n"))
+          EOF
+          cat notes.md
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          set -eu
+          # A re-run updates the release instead of failing on it.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "Ranch $VERSION" \
+              --notes-file notes.md --prerelease="$PRERELEASE"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Ranch $VERSION" \
+              --notes-file notes.md --prerelease="$PRERELEASE"
+          fi
+
+  linux:
+    needs: release
+    # Ubuntu 22.04: an older glibc than today's distributions, so the AppImage
+    # built here runs on them and on everything newer.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev pkg-config \
+            file rpm xdg-utils
+      - uses: ./.github/actions/pnpm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Build the bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The AppImage tooling runs without FUSE.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -eu
+          VERSION=$(node scripts/set-version.mjs "$GITHUB_REF_NAME" | sed -n 's/^version=//p')
+          # Updater artifacts need the signing key; without it, plain bundles.
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            CONFIG='{"bundle":{"createUpdaterArtifacts":false}}'
+          else
+            CONFIG='{}'
+          fi
+          pnpm tauri build --bundles deb,appimage --config "$CONFIG"
+          # RPM refuses a `-` in a version. A pre-release goes in the package's
+          # release instead, Fedora's way: 0.4.0-rc.1 is version 0.4.0, release
+          # 0.rc.1, which sorts before 0.4.0's release 1. Same binary.
+          # `tauri bundle` needs --features (see the macOS job).
+          RPM_VERSION=${VERSION%%-*}
+          case "$VERSION" in
+            *-*) RPM_RELEASE="0.${VERSION#*-}" ;;
+            *) RPM_RELEASE=1 ;;
+          esac
+          pnpm tauri bundle --features desktop --bundles rpm --config \
+            "{\"version\":\"$RPM_VERSION\",\"bundle\":{\"createUpdaterArtifacts\":false,\"linux\":{\"rpm\":{\"release\":\"$RPM_RELEASE\"}}}}"
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir out
+          B=src-tauri/target/release/bundle
+          cp $B/deb/*.deb $B/rpm/*.rpm $B/appimage/*.AppImage out/
+          cp $B/appimage/*.AppImage.sig out/ 2>/dev/null || true
+          (cd out && sha256sum * > SHA256SUMS-linux.txt)
+          gh release upload "$GITHUB_REF_NAME" out/* --clobber
+      # Auto-updates: the AppImage is what a Linux updater installs. No
+      # signature (no signing key), no update: the release stands without one.
+      - name: Publish the update
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          B=src-tauri/target/release/bundle/appimage
+          if ! ls $B/*.AppImage.sig >/dev/null 2>&1; then
+            echo "no signature: update not published"; exit 0
+          fi
+          case "$(uname -m)" in x86_64) P=linux-x86_64 ;; aarch64) P=linux-aarch64 ;; *) echo "unknown arch"; exit 1 ;; esac
+          A=$(ls $B/*.AppImage | head -1)
+          node scripts/publish-update.mjs "$GITHUB_REF_NAME" --platforms "$P" --artifact "$A" --signature "$A.sig"
+
+  macos:
+    needs: release
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pnpm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Build the app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -eu
+          node scripts/set-version.mjs "$GITHUB_REF_NAME"
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            CONFIG='{"bundle":{"createUpdaterArtifacts":false}}'
+          else
+            CONFIG='{}'
+          fi
+          # A secret that is not set arrives as an empty string; it must be
+          # absent, not empty, or Tauri would try to sign or notarize with it.
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            eval "[ -n \"\${$v:-}\" ]" || unset "$v"
+          done
+          # In three steps. A universal build compiles both architectures but only
+          # merges the MAIN binary into target/universal-apple-darwin; the bundle also
+          # ships `ranch-mcp`, which the bundler then looks for there and does not find.
+          pnpm tauri build --target universal-apple-darwin --no-bundle --config "$CONFIG"
+          T=src-tauri/target
+          lipo -create -output "$T/universal-apple-darwin/release/ranch-mcp" \
+            "$T/aarch64-apple-darwin/release/ranch-mcp" \
+            "$T/x86_64-apple-darwin/release/ranch-mcp"
+          # `tauri bundle` does not read `build.features` from tauri.conf.json: without
+          # --features it does not know `ranch-mcp` and looks for a `ranch_mcp`.
+          pnpm tauri bundle --target universal-apple-darwin --features desktop --bundles app,dmg --config "$CONFIG"
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir out
+          B=src-tauri/target/universal-apple-darwin/release/bundle
+          cp $B/dmg/*.dmg out/
+          cp $B/macos/*.app.tar.gz $B/macos/*.app.tar.gz.sig out/ 2>/dev/null || true
+          (cd out && shasum -a 256 * > SHA256SUMS-macos.txt)
+          gh release upload "$GITHUB_REF_NAME" out/* --clobber
+      # Homebrew: the tap's cask follows the release, `ranch` for a stable
+      # version and `ranch@beta` for a pre-release (scripts/homebrew-cask.mjs).
+      # The deploy key may write to the tap and nothing else.
+      - name: Update the Homebrew tap
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          set -eu
+          if [ -z "${TAP_KEY:-}" ]; then
+            echo "no HOMEBREW_TAP_DEPLOY_KEY: tap not updated"; exit 0
+          fi
+          SHA=$(cd out && shasum -a 256 *.dmg | cut -d' ' -f1)
+          K="$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$TAP_KEY" > "$K" && chmod 600 "$K"
+          # GitHub's published host key, pinned rather than trusted on first use.
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $K -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
+          git clone --depth 1 git@github.com:Bramvanosta/homebrew-tap.git "$RUNNER_TEMP/tap"
+          node scripts/homebrew-cask.mjs "$GITHUB_REF_NAME" --sha256 "$SHA" --tap "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          git add Casks
+          if git diff --cached --quiet; then
+            echo "cask unchanged"; exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "ranch ${GITHUB_REF_NAME#v}"
+          git push
+      # Auto-updates: the universal app archive serves both Mac architectures.
+      - name: Publish the update
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          A=src-tauri/target/universal-apple-darwin/release/bundle/macos/Ranch.app.tar.gz
+          if [ ! -f "$A.sig" ]; then
+            echo "no signature: update not published"; exit 0
+          fi
+          node scripts/publish-update.mjs "$GITHUB_REF_NAME" --platforms darwin-aarch64,darwin-x86_64 --artifact "$A" --signature "$A.sig"

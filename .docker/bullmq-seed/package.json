@@ -1,0 +1,11 @@
+{
+  "name": "ranch-bullmq-seed",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Seeds local Redis with BullMQ queues + jobs, for Ranch development.",
+  "license": "MIT",
+  "dependencies": {
+    "bullmq": "^5"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "queueRef": { "prefix": "myapp:queues", "name": "billing" },
+  "jobId": "77",
+  "fields": {
+    "name": "charge-customer",
+    "data": "{\"customerId\":\"c-99\",\"amountCents\":4999,\"currency\":\"EUR\"}",
+    "opts": "{\"attempts\":5,\"backoff\":{\"type\":\"exponential\",\"delay\":2000},\"priority\":1}",
+    "attemptsMade": "1",
+    "timestamp": "1700001000000",
+    "processedOn": "1700001005000"
+  },
+  "expected": {
+    "name": "charge-customer",
+    "state": "active",
+    "attemptsMade": 1,
+    "timestamp": 1700001000000,
+    "processedOn": 1700001005000,
+    "stacktraceCount": 0,
+    "dataPreview": { "customerId": "c-99" }
+  }
+}

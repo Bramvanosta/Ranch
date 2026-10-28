@@ -1,0 +1,46 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The app's own windows. Only what the front end calls: window chrome, events, notifications, deep links, and opening Ranch's documentation on GitHub. Updates, windows and processes go through Ranch's own commands.",
+  "windows": ["main", "about", "settings", "win-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-unminimize",
+    "core:window:allow-start-dragging",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-is-visible",
+    "core:window:allow-is-minimized",
+    "core:window:allow-is-focused",
+    "core:window:allow-is-maximized",
+    "core:window:allow-destroy",
+    "core:window:allow-outer-position",
+    "core:window:allow-outer-size",
+    "core:window:allow-scale-factor",
+    "core:window:allow-set-position",
+    "core:window:allow-center",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-request-user-attention",
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "notification:default",
+    "deep-link:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://github.com/Bramvanosta/ranch/*"
+        },
+        {
+          "url": "https://github.com/Bramvanosta/Ranch/*"
+        }
+      ]
+    }
+  ]
+}

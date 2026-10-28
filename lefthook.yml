@@ -1,0 +1,23 @@
+# Lefthook git hooks for Ranch.
+# Pre-commit runs in parallel:
+#   1. Biome format+lint on staged JS/TS/JSON (auto-fix safe, fail unsafe)
+#   2. cargo fmt --check on staged Rust files
+#   3. cargo clippy --no-deps -D warnings on every crate of the workspace
+#
+# Install with `pnpm lefthook install` (registers hooks in .git/hooks/).
+
+pre-commit:
+  parallel: true
+  commands:
+    biome:
+      glob: "*.{ts,tsx,js,jsx,json}"
+      run: pnpm biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+
+    cargo-fmt:
+      glob: "src-tauri/**/*.rs"
+      run: cd src-tauri && cargo fmt --check
+
+    cargo-clippy:
+      glob: "src-tauri/**/*.rs"
+      run: cd src-tauri && cargo clippy --no-deps --workspace --all-targets -- -D warnings

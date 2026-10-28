@@ -1,0 +1,21 @@
+name: Idea
+description: Something Ranch could do, or do better.
+labels: ["idea"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: How you picture it. Optional, but a sketch or an example helps.
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Workarounds you use, other tools that do it well, how often you hit this.

@@ -1,0 +1,50 @@
+# Queue backends for BullMQ on Redis: the connection actors, what BullMQ
+# keeps in Redis, the SSH tunnel and TLS. What this manifest lists is what
+# they may name: the domain, the application, Redis and the crates that
+# reach it; no other store (sqlx), no shell (tauri), no wire format (specta,
+# schemars). See docs/architecture.md (The dependency rule).
+[package]
+name = "ranch-bullmq-redis"
+description = "BullMQ on Redis, behind the application's queue backend port"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+ranch-domain = { workspace = true }
+ranch-application = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "net", "io-util"] }
+# CancellationToken for clean per-actor shutdown.
+tokio-util = { workspace = true }
+# Async Redis client with rustls TLS. Features:
+#   - `tokio-rustls-comp` pulls rustls (no system OpenSSL, matching sqlx's choice)
+#   - `connection-manager` enables auto-reconnect (used by the connection
+#     actor; `test_connection` uses one-shot connections).
+redis = { workspace = true }
+# Parse + validate user-pasted CA PEM blocks before handing them to
+# redis-rs's TlsCertificates. Pure-Rust, zero deps beyond `pki-types`.
+rustls-pemfile = { workspace = true }
+# Pure-Rust SSH client for the bastion-tunnel path, pulled directly (not via
+# `async-ssh2-tokio`) to keep control of the host-key and channel handling.
+# `russh-keys` is re-exported as `russh::keys`, so no separate dep.
+#
+# `default-features = false` drops aws-lc-rs (which pulls aws-lc-sys, a C
+# library) for the `ring` feature, a pure-Rust crypto backend that matches
+# sqlx-rustls + redis-tokio-rustls + rustls posture. `flate2` and `rsa` are
+# kept from the default set; `flate2` enables ssh-compression, `rsa` enables
+# RSA pubkey auth (the most common key type in the wild).
+russh = { workspace = true }
+# The connection's endpoint is a Redis URL.
+url = { workspace = true }
+# A worker's client name holds its queue's name in base64.
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+ranch-secrets = { workspace = true }
+tempfile = { workspace = true }

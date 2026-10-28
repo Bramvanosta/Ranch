@@ -1,0 +1,21 @@
+{
+  "queueRef": { "prefix": "bull", "name": "report-children" },
+  "jobId": "9001",
+  "fields": {
+    "name": "compute-segment",
+    "data": "{\"segmentId\":\"seg-3\",\"rangeStart\":0,\"rangeEnd\":1000}",
+    "opts": "{\"attempts\":1}",
+    "attemptsMade": "0",
+    "timestamp": "1700000010000",
+    "parentKey": "bull:report-parent:42"
+  },
+  "expected": {
+    "name": "compute-segment",
+    "state": "waitingChildren",
+    "attemptsMade": 0,
+    "timestamp": 1700000010000,
+    "parentKey": "bull:report-parent:42",
+    "stacktraceCount": 0,
+    "dataPreview": { "segmentId": "seg-3" }
+  }
+}

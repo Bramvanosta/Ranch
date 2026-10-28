@@ -1,0 +1,24 @@
+# The adapters kept in `ranch.db`: the saved connections, the settings, the
+# audit log and the trade of an approval, with the pool and the migrations.
+# What this manifest lists is what they may name: the domain, the
+# application, SQLite; no queue store (redis), no shell (tauri), no wire
+# format (specta, schemars). See docs/architecture.md (The dependency rule).
+[package]
+name = "ranch-sqlite"
+description = "Where Ranch keeps its own data: SQLite, behind the application's ports"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+ranch-domain = { workspace = true }
+ranch-application = { workspace = true }
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

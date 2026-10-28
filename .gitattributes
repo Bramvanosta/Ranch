@@ -1,0 +1,24 @@
+# Enforce LF line endings on every checkout, on every OS.
+#
+# Without this, Windows contributors / CI runners check out CRLF-normalised
+# files and Biome's formatter flags every file as needing reformatting.
+# Locking eol=lf for all text files makes the checkout deterministic.
+
+* text=auto eol=lf
+
+# Explicit binary types: never line-end-normalised.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.icns   binary
+*.svg    text eol=lf
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.otf    binary
+*.zip    binary
+*.gz     binary
+*.tar    binary
+*.pdf    binary

@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in Ranch does not work as it should.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a connection to …
+        2. On the queue …, click …
+        3. …
+  - type: input
+    id: version
+    attributes:
+      label: Ranch version
+      description: Ranch › About, or the image tag for Ranch server.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Where
+      options:
+        - Desktop app (macOS)
+        - Desktop app (Linux)
+        - Ranch server (Docker)
+        - ranch-mcp (an AI agent)
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: BullMQ and Redis versions
+      description: If it is about a queue or a job.
+      placeholder: "BullMQ 5.x, Redis 7.2"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error message
+      render: text

@@ -1,0 +1,277 @@
+@import "tailwindcss";
+/* Bundled fonts: the app never fetches a font at runtime. */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * The shadcn (base-luma) Tabs styles use `data-horizontal:` / `data-vertical:`
+ * (custom variants that shadcn ships in `shadcn/tailwind.css`, which this
+ * project never imported). Without them Tailwind reads `data-horizontal:` as
+ * "has a `data-horizontal` attribute", which Base UI never sets (it sets
+ * `data-orientation`): a `<Tabs>` without its own `flex-col` laid out as a
+ * row, its list stretched into a full-height pill (Settings).
+ */
+@custom-variant data-horizontal (&[data-orientation="horizontal"]);
+@custom-variant data-vertical (&[data-orientation="vertical"]);
+
+/*
+ * Type, sizes and radii. UI text uses the system font with
+ * Inter as the bundled fallback (Linux); data (IDs, keys, counts, timestamps,
+ * payloads) uses JetBrains Mono. Nothing renders under 11 px: `text-2xs` is the
+ * floor (column headers, 600 uppercase +0.05em).
+ */
+@theme {
+    --font-sans: -apple-system, BlinkMacSystemFont, "Inter Variable", "Cantarell", sans-serif;
+    --font-heading: -apple-system, BlinkMacSystemFont, "Inter Variable", "Cantarell", sans-serif;
+    --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", monospace;
+
+    --text-2xs: 11px;
+    --text-2xs--line-height: 16px;
+    --text-xs: 12px;
+    --text-xs--line-height: 16px;
+    --text-sm: 13px;
+    --text-sm--line-height: 20px;
+    --text-base: 14px;
+    --text-base--line-height: 22px;
+    --text-lg: 18px;
+    --text-lg--line-height: 26px;
+    --text-xl: 20px;
+    --text-xl--line-height: 28px;
+
+    /* Layout sizes: `w-sidebar`, `h-toolbar`, `h-row-dense`, `h-control`… */
+    --spacing-sidebar: 240px;
+    --spacing-sidebar-min: 220px;
+    --spacing-sidebar-max: 320px;
+    --spacing-inspector: 380px;
+    --spacing-inspector-min: 320px;
+    --spacing-inspector-max: 440px;
+    --spacing-toolbar: 54px;
+    --spacing-info-strip: 32px;
+    --spacing-view-tabs: 40px;
+    --spacing-row-queue: 28px;
+    --spacing-row-connection: 30px;
+    --spacing-row-dense: 32px;
+    --spacing-row: 42px;
+    --spacing-row-two-line: 56px;
+    --spacing-control-sm: 28px;
+    --spacing-control: 30px;
+    --spacing-control-lg: 34px;
+
+    --radius-tag: 5px;
+    --radius-control: 7px;
+    --radius-card: 10px;
+    --radius-window: 12px;
+    --radius-sheet: 14px;
+}
+
+@theme inline {
+    /* The shadcn colour names are gone: utilities use
+       the tokens below (`bg-(--surf)`, `text-(--text2)`, `border-(--line)`). */
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/*
+ * Design tokens. Light in `:root`, dark in
+ * `.dark` (next-themes puts it on <html>). The shadcn aliases left with
+ * These are the only colour names.
+ */
+:root {
+    /* Surfaces and text (§2.1) */
+    --bg: #ffffff;           /* main content */
+    --side: #f3f4f6;         /* sidebar */
+    --surf: #f6f7f9;         /* cards, fields, info strip, toolbar buttons */
+    --surf2: #e9ebef;        /* selected segment, chips, hover */
+    --panel: #ffffff;        /* sheets, palette, menus */
+    --field: #f6f7f9;        /* text inputs, code blocks */
+    --text: #17181c;
+    --text2: #5f636e;        /* secondary text, column headers */
+    --dim: #a3a6ae;          /* ZERO VALUES ONLY, never for text that must be read */
+    --line: rgba(0, 0, 0, 0.1);
+    --scrim: rgba(20, 22, 28, 0.25);
+
+    /* Accent, AI, danger (§2.2): orange is what the human does, violet what an
+       agent did or asks, never both on one control. */
+    --accent: #b9560b;
+    --accent-text: #ffffff;
+    --sel: rgba(185, 86, 11, 0.1);
+    --link: #a34b09;
+    --ai: #5b45c9;
+    --ai-text: #ffffff;
+    --ai-bg: rgba(91, 69, 201, 0.07);
+    --ai-line: rgba(91, 69, 201, 0.3);
+    --danger: #c62f34;       /* destructive buttons only */
+    --danger-text: #ffffff;
+
+    /* Job states (§2.3). `-text` is for state-coloured text on --bg. */
+    --state-waiting: #5b4fd0;
+    --state-active: #0b7fa1;
+    --state-delayed: #9a5b06;
+    --state-failed: #d6402f;
+    --state-completed: #1d7f46;
+    /* State text reaches 4.5:1 on its own tinted pill too. */
+    --state-waiting-text: var(--state-waiting);
+    --state-active-text: #076583;
+    --state-delayed-text: #7f4b05;
+    --state-failed-text: #b8321f;
+    --state-completed-text: #17703d;
+
+    --chart-1: oklch(0.845 0.143 164.978);
+    --chart-2: oklch(0.696 0.17 162.48);
+    --chart-3: oklch(0.596 0.145 163.225);
+    --chart-4: oklch(0.508 0.118 165.612);
+    --chart-5: oklch(0.432 0.095 166.913);
+    --radius: 0.625rem;
+
+    /* Curated environment color palette.
+       Used by EnvironmentColorPicker swatches AND the ConnectionSidebar
+       env-stripe accent. Three named tokens + 7 generic slots so users can
+       expand without us inventing more semantic names. Each reaches 3:1 on
+       --bg and --side (tokens.test.ts); `.dark` adjusts lightness, not hue. */
+    --env-production: oklch(0.577 0.245 27.325);   /* red */
+    --env-staging:    oklch(0.6   0.15  85.0);     /* amber */
+    --env-local:      oklch(0.6   0.18  150.0);    /* green */
+    --env-custom-1:   oklch(0.55  0.20  264.0);    /* blue */
+    --env-custom-2:   oklch(0.55  0.18  300.0);    /* magenta */
+    --env-custom-3:   oklch(0.6   0.15  200.0);    /* teal */
+    --env-custom-4:   oklch(0.55  0.18  35.0);     /* orange */
+    --env-custom-5:   oklch(0.55  0.18  330.0);    /* pink */
+    --env-custom-6:   oklch(0.5   0.10  250.0);    /* slate */
+    --env-custom-7:   oklch(0.45  0.12  170.0);    /* dark teal */
+
+    /* JsonViewer syntax-highlighting tokens. Used by the
+       drill-down's Payload / Options tabs. WCAG AA against `--surf`. */
+    --syntax-key:     oklch(0.55 0.18 270);  /* purple-blue */
+    --syntax-string:  oklch(0.5 0.16 145);   /* green; 4.5:1 on --field */
+    --syntax-literal: oklch(0.53 0.19 30);   /* orange; 4.5:1 on --field */
+}
+
+.dark {
+    --bg: #141518;
+    --side: #0f1013;
+    --surf: #1a1b1f;
+    --surf2: #26272d;
+    --panel: #1d1e23;
+    --field: #121316;
+    --text: #e8e8ea;
+    --text2: #9a9ca5;
+    --dim: #5f626b;          /* ZERO VALUES ONLY */
+    --line: rgba(255, 255, 255, 0.08);
+    --scrim: rgba(0, 0, 0, 0.45);
+
+    --accent: #f28c38;
+    --accent-text: #1a1208;
+    --sel: rgba(242, 140, 56, 0.14);
+    --link: #f5a462;
+    --ai: #b6a8ff;
+    --ai-text: #120d26;
+    --ai-bg: rgba(182, 168, 255, 0.1);
+    --ai-line: rgba(182, 168, 255, 0.35);
+    --danger: #d63a40;       /* spec #e5484d gave white text 3.9:1 */
+    --danger-text: #ffffff;
+
+    --state-waiting: #9b8cf0;
+    --state-active: #4cc6e6;
+    --state-delayed: #e5b544;
+    --state-failed: #ff6b5a;
+    --state-completed: #3fbf8f;
+    --state-failed-text: #ff8f80;
+    --state-active-text: var(--state-active);
+    --state-delayed-text: var(--state-delayed);
+    --state-completed-text: var(--state-completed);
+
+    --env-custom-6:   oklch(0.6   0.10  250.0);
+    --env-custom-7:   oklch(0.6   0.12  170.0);
+
+    --syntax-key:     oklch(0.78 0.18 270);
+    --syntax-string:  oklch(0.78 0.18 145);
+    --syntax-literal: oklch(0.78 0.20 30);
+}
+
+@layer base {
+    * {
+        border-color: var(--line);
+        outline-color: color-mix(in oklch, var(--accent) 50%, transparent);
+    }
+    html,
+    body,
+    #root {
+        height: 100vh;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+    }
+    body {
+        @apply font-sans;
+        background-color: var(--bg);
+        color: var(--text);
+        /* No `scrollbar-gutter: stable` here: the body never scrolls, and with
+           classic scrollbars (a mouse plugged in, or macOS "always show scroll
+           bars") the reserved gutter made a `100vw` shell wider than what is
+           visible: the right edge, version number included, was cut off. */
+    }
+}
+
+/* Data type: counts, latency, timestamps in the mono face with
+   tabular numerals, so live numbers do not jitter. */
+@utility font-tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Title-bar button utilities. */
+@layer utilities {
+    .title-bar-btn {
+        @apply hover:bg-(--surf2) hover:text-(--text) flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-slate-400 transition-colors outline-none;
+    }
+
+    .title-bar-control {
+        @apply hover:bg-(--surf2) hover:text-(--text) flex h-8 w-9 cursor-pointer items-center justify-center text-slate-400 outline-none;
+    }
+
+    .scrollbar-none {
+        &::-webkit-scrollbar {
+            display: none;
+        }
+        & {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    }
+}
+
+/* Global scrollbar styles with theme support. */
+::-webkit-scrollbar {
+    width: 0.5rem;
+    height: 0.5rem;
+}
+
+::-webkit-scrollbar-track {
+    border-radius: calc(var(--radius) - 4px);
+    background-color: var(--surf);
+}
+
+::-webkit-scrollbar-thumb {
+    border-radius: calc(var(--radius) - 4px);
+    background-color: color-mix(in oklch, var(--text2) 30%, transparent);
+}
+
+::-webkit-scrollbar-corner {
+    background-color: transparent;
+}
+
+button {
+    user-select: none;
+}

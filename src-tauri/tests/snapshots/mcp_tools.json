@@ -1,0 +1,975 @@
+[
+  {
+    "name": "add_job",
+    "description": "Add a job to an existing queue: name + JSON payload, optional delayMs, attempts, priority (1 = highest), lifo. Returns the new job id and the state it landed in (waiting, paused, delayed or prioritized). Workers of the queue will process it like any other job.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A job to enqueue.",
+      "properties": {
+        "attempts": {
+          "default": null,
+          "description": "Optional. Total attempts before the job is failed (BullMQ default: 1).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "connectionId": {
+          "type": "string"
+        },
+        "data": {
+          "description": "The payload: any JSON value, usually an object."
+        },
+        "delayMs": {
+          "default": null,
+          "description": "Optional. Milliseconds before the job may run (default 0 = now).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lifo": {
+          "default": null,
+          "description": "Optional. `true` = process before the jobs already waiting.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Job name: what the worker's processor switches on.",
+          "type": "string"
+        },
+        "priority": {
+          "default": null,
+          "description": "Optional. 1 = highest priority … 2097152 = lowest. Default 0 = none.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "name",
+        "data"
+      ],
+      "title": "AddJobInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "annotate_cause",
+    "description": "Attach your diagnosis to a failure cause so the user sees it next to the failures in Ranch: `text` (what is wrong, why) and `steps` (what to do, in order). Identify the cause by `signature` (from `list_failure_causes`) and one of its queues. Needs no approval (it changes no queue state) but is refused on connections that are read-only for agents.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A resolution note on one cause.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "jobsRead": {
+          "default": [],
+          "description": "The job ids you read to reach this diagnosis.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "queue": {
+          "default": null,
+          "description": "Optional. The queue's name, as the cause's `queueNames` give it,\nshown with the note. Default: the queue's id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queueId": {
+          "description": "The queue the note is about: the `queueId` of one of the cause's jobs.",
+          "type": "string"
+        },
+        "signature": {
+          "description": "The cause's `signature`, exactly as `list_failure_causes` returns it.",
+          "type": "string"
+        },
+        "steps": {
+          "default": [],
+          "description": "What to do, in order (at most 20 short steps).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "What is wrong and why, in a few sentences (at most 4000 characters).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "signature",
+        "text"
+      ],
+      "title": "AnnotateCauseInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "bulk_promote_jobs",
+    "description": "Promote several delayed jobs of one queue in one operation (max 1000 ids).",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Several jobs of one queue, handled as ONE operation (and one\napproval). At most [`MCP_BULK_MAX_JOBS`] ids per call.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "jobIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "jobIds"
+      ],
+      "title": "BulkJobsInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "bulk_remove_jobs",
+    "description": "Remove several jobs of one queue in one operation (max 1000 ids).",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Several jobs of one queue, handled as ONE operation (and one\napproval). At most [`MCP_BULK_MAX_JOBS`] ids per call.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "jobIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "jobIds"
+      ],
+      "title": "BulkJobsInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "bulk_retry_jobs",
+    "description": "Retry failed jobs of one queue in one operation: either `jobIds` (max 1000), or `allFailed: true` for every failed job of the queue.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`bulk_retry_jobs`: explicit ids **or** every failed job.",
+      "properties": {
+        "allFailed": {
+          "default": false,
+          "description": "`true` = retry every failed job of the queue, however many. Do not\ncombine with `jobIds`.",
+          "type": "boolean"
+        },
+        "connectionId": {
+          "type": "string"
+        },
+        "jobIds": {
+          "default": [],
+          "description": "The failed jobs to retry (max 1000). Leave empty with `allFailed`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId"
+      ],
+      "title": "BulkRetryInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "clean_queue",
+    "description": "Clean a queue: remove the `completed` or `failed` jobs that finished more than olderThanMs ago (0 = all of them). Members of a flow are left in place. Cannot be undone.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`clean_queue`.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "olderThanMs": {
+          "description": "Only jobs that finished more than this many milliseconds ago.\n`0` = every job of that state.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        },
+        "state": {
+          "description": "`completed` or `failed`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "state",
+        "olderThanMs"
+      ],
+      "title": "CleanQueueInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "drain_queue",
+    "description": "Drain a queue: remove every job that has not started: waiting, paused, prioritized and (unless includeDelayed is false) delayed. Active, completed and failed jobs stay. The pending run of a job scheduler and members of a flow are left in place. Cannot be undone.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`drain_queue`.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "includeDelayed": {
+          "default": null,
+          "description": "Optional, default `true`: also remove delayed jobs.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId"
+      ],
+      "title": "DrainQueueInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_connection_metrics",
+    "description": "The same metrics aggregated over every queue of a connection.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Metrics of a whole connection over a window.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "range": {
+          "description": "One of `5m`, `15m`, `30m`, `1h`, `6h`, `24h` (default), `3d`, `7d`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "connectionId"
+      ],
+      "title": "ConnectionMetricsInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_flow",
+    "description": "The flow (BullMQ FlowProducer parent/child tree) a job belongs to, as nested JSON from the root: per job its queue, id, name, state, duration, failure reason and children, across queues. A parent in state `waitingChildren` is waiting for the children that are not `completed`. A job that is in no flow returns a tree of one.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "jobId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "jobId"
+      ],
+      "title": "InspectJobInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_job_logs",
+    "description": "Read a page of a job's BullMQ log lines.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A page of a job's BullMQ log lines.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "jobId": {
+          "type": "string"
+        },
+        "limit": {
+          "default": null,
+          "description": "Optional. Page size, capped at 500 (default 100).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "default": null,
+          "description": "Optional. 0-based offset into the log list (default 0).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "jobId"
+      ],
+      "title": "JobLogsInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_queue_metrics",
+    "description": "Metrics of one queue (throughput, failure rate, processing time, delay).",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Metrics of one queue over a window.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        },
+        "range": {
+          "description": "One of `5m`, `15m`, `30m`, `1h`, `6h`, `24h` (default), `3d`, `7d`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId"
+      ],
+      "title": "QueueMetricsInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "inspect_job",
+    "description": "Fetch everything about one job: payload, options, return value, progress, the whole failure reason and its stacktraces. BullMQ keeps one trace per attempt; identical ones are given once, with `stacktraceIdenticalAttempts` saying how many attempts produced it.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "jobId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "jobId"
+      ],
+      "title": "InspectJobInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_connections",
+    "description": "List every saved connection: its id and name, its group and environment, `backend` (the kind of queue system: `bullmq-redis`), `endpoint` (where it points, without credentials: `redis://host:6379/0`, `rediss://` with TLS, \"via SSH\" through a tunnel) and `mcpReadonly`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_environments",
+    "description": "List every environment (e.g. local, staging, production).",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_failed_jobs",
+    "description": "Failed jobs across ALL queues of a connection, newest first, with per-queue counts and the most failing job types. Rows are summaries like `list_jobs` (no stacktrace, no `opts`, `failedReason` capped); call `inspect_job` for one job. Optional filters: queue, name, reason (substring). Looks at the newest 500 failed jobs per queue.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Everything that failed on a connection, across its queues.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "limit": {
+          "description": "Page size, 1–250. Default 50.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Only this job name (exact).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "0-based offset. Default 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "queue": {
+          "description": "Only this queue (exact name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "Only failures whose reason contains this text (case-insensitive).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "connectionId"
+      ],
+      "title": "FailedJobsInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_failure_causes",
+    "description": "Failures of a connection grouped by cause (the reason with its values replaced), most frequent first: per cause its `signature`, a sample reason, how many jobs, first and last time, job names, queues, up to 20 of its jobs, and whether a note already explains it. Optional `queue`. Use the signature with `annotate_cause`.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The causes of a connection's failures.",
+      "properties": {
+        "connectionId": {
+          "description": "Connection id (ULID, from `list_connections`).",
+          "type": "string"
+        },
+        "queue": {
+          "default": null,
+          "description": "One queue, by name; omit for every queue of the connection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "connectionId"
+      ],
+      "title": "FailureCausesInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_jobs",
+    "description": "List jobs in a (queue, state) pair, paginated. Rows carry the payload, the timing and a capped `failedReason`, but no stacktrace and no `opts`; `stacktraceEntries` says how many traces exist; `inspect_job` gives them. Optional `search` (job id or name), `reason` (failure reason) and `sortBy` (name | queuedAt | duration) run across the whole state (the newest 10,000 jobs), not just the returned page.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "limit": {
+          "default": null,
+          "description": "Optional. Page size, capped at 100 (default 50).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "newestFirst": {
+          "default": true,
+          "description": "Optional. For sorted-set states: `true` (the default) = newest-first\n(ZREVRANGE).",
+          "type": "boolean"
+        },
+        "offset": {
+          "default": null,
+          "description": "Optional. 0-based offset into the state's list/sorted-set\n(default 0).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        },
+        "reason": {
+          "default": null,
+          "description": "Optional. Case-insensitive substring of the failure reason.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "search": {
+          "default": null,
+          "description": "Optional. Case-insensitive substring of the job id or name, matched\nacross the whole state (the newest 10,000 jobs), not just one page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortBy": {
+          "default": null,
+          "description": "Optional. Sort field: `name`, `queuedAt` or `duration`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortDescending": {
+          "default": null,
+          "description": "Optional, with `sortBy`: `true` = descending. Default ascending.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "state": {
+          "description": "Job state: the common lifecycle (`waiting`, `active`, `completed`, `failed`, `delayed`, `paused`) or one the connection's backend adds (`prioritized`, `waitingChildren`, `stalled`).",
+          "enum": [
+            "waiting",
+            "active",
+            "completed",
+            "failed",
+            "delayed",
+            "prioritized",
+            "waitingChildren",
+            "stalled",
+            "paused"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "state"
+      ],
+      "title": "ListJobsInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_queues",
+    "description": "List BullMQ queues on a connection. Each queue carries `counts`: jobs per state code (`waiting`, `active`, `completed`, `failed`, `delayed`, `prioritized`, `paused`); a state that is absent holds no job.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "connectionId": {
+          "description": "Connection id (ULID, from `list_connections`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId"
+      ],
+      "title": "ConnectionIdInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_schedulers",
+    "description": "List the schedulers (CRON / repeatable jobs) of a queue.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A queue on a connection (pause / resume, schedulers, metrics).",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId"
+      ],
+      "title": "QueueInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_workers",
+    "description": "List the BullMQ workers attached to a queue (id, name, address, age, idle seconds), read from CLIENT LIST. `supported: false` means this Redis provider forbids CLIENT LIST; it does not mean there are no workers.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A queue on a connection (pause / resume, schedulers, metrics).",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId"
+      ],
+      "title": "QueueInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "pause_queue",
+    "description": "Pause a queue (workers stop picking up new jobs).",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A queue on a connection (pause / resume, schedulers, metrics).",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId"
+      ],
+      "title": "QueueInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "pause_scheduler",
+    "description": "Pause a scheduler (it stops producing jobs until resumed).",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "One scheduler (repeatable job) of a queue.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        },
+        "schedulerKey": {
+          "description": "The scheduler key as returned by `list_schedulers`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "schedulerKey"
+      ],
+      "title": "SchedulerInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "promote_job",
+    "description": "Promote a delayed job into the waiting list immediately.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "jobId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "jobId"
+      ],
+      "title": "JobActionInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "remove_job",
+    "description": "Remove a job (delete from all state lists + hash + logs).",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "jobId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "jobId"
+      ],
+      "title": "JobActionInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "remove_scheduler",
+    "description": "Delete a job scheduler (`schedulerKey` from `list_schedulers`) and its pending job. A job of it that is running finishes; no further job is produced. Cannot be undone; re-create it with upsert_scheduler.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "One scheduler (repeatable job) of a queue.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        },
+        "schedulerKey": {
+          "description": "The scheduler key as returned by `list_schedulers`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "schedulerKey"
+      ],
+      "title": "SchedulerInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "resume_queue",
+    "description": "Resume a paused queue.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A queue on a connection (pause / resume, schedulers, metrics).",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId"
+      ],
+      "title": "QueueInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "resume_scheduler",
+    "description": "Resume a paused scheduler.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "One scheduler (repeatable job) of a queue.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        },
+        "schedulerKey": {
+          "description": "The scheduler key as returned by `list_schedulers`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "schedulerKey"
+      ],
+      "title": "SchedulerInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "retry_job",
+    "description": "Retry a failed job (move it back to waiting).",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "jobId": {
+          "type": "string"
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "jobId"
+      ],
+      "title": "JobActionInput",
+      "type": "object"
+    }
+  },
+  {
+    "name": "upsert_scheduler",
+    "description": "Create a job scheduler, or change an existing one (same schedulerId): jobName + either a cron `pattern` (5 fields, or 6 with seconds first; optional IANA `tz`) or `everyMs` (fixed interval, min 1000), and an optional JSON `data` template. Workers of the queue run the jobs it produces. Returns the next run and the id of the pending job.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "`upsert_scheduler`: exactly one of `pattern` / `everyMs`.",
+      "properties": {
+        "connectionId": {
+          "type": "string"
+        },
+        "data": {
+          "default": null,
+          "description": "Optional. The `data` of every job produced (any JSON; default `{}`)."
+        },
+        "everyMs": {
+          "default": null,
+          "description": "Fixed interval in milliseconds (min 1000), instead of `pattern`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "jobName": {
+          "description": "Name of the jobs the scheduler produces.",
+          "type": "string"
+        },
+        "pattern": {
+          "default": null,
+          "description": "Cron pattern: 5 fields (minute first) or 6 (second first). Numbers,\n`*`, lists, ranges, steps, month / weekday names.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "queueId": {
+          "description": "The queue's `id`, exactly as `list_queues` returns it. Opaque: pass it as given, never build one.",
+          "type": "string"
+        },
+        "schedulerId": {
+          "description": "The scheduler id. An existing id is edited, a new one is created.",
+          "type": "string"
+        },
+        "tz": {
+          "default": null,
+          "description": "IANA timezone the pattern is read in (default UTC), e.g. `Europe/Paris`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "connectionId",
+        "queueId",
+        "schedulerId",
+        "jobName"
+      ],
+      "title": "UpsertSchedulerInput",
+      "type": "object"
+    }
+  }
+]

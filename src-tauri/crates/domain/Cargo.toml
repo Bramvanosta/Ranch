@@ -1,0 +1,19 @@
+# Ranch's types and rules. What this manifest lists is what the domain may
+# name: no store (sqlx, redis), no shell (tauri), no wire format (specta,
+# schemars), no layer above it. See docs/architecture.md (The dependency rule).
+[package]
+name = "ranch-domain"
+description = "Ranch's types and rules, apart from the I/O that feeds them"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+croner = { workspace = true }
+# Only for what is stored as JSON (an audit target, the SSH tunnel of an
+# endpoint) and the payloads a job or a schedule carries.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

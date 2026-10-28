@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- Ranch tile on the 16 px grid: 2 px bars, 1 px gaps. -->
+  <rect width="16" height="16" rx="3.6" fill="#17181c"/>
+  <rect x="6" y="4" width="7" height="2" rx="1" fill="#f28c38"/>
+  <rect x="3" y="7" width="7" height="2" rx="1" fill="#ececee"/>
+  <rect x="3" y="10" width="7" height="2" rx="1" fill="#ececee"/>
+</svg>

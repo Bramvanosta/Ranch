@@ -1,0 +1,42 @@
+# Ranch server next to a Redis: a starting point, and a demo:
+#
+#   RANCH_PASSWORD=choose-one docker compose -f docker/compose.yaml up --build
+#   open http://localhost:8080        (user: ranch)
+#
+# In Ranch, add a connection to host `redis`, port 6379.
+#
+# For a real deployment: drop the `redis` service, point Ranch at yours, put a
+# TLS-terminating reverse proxy in front (Basic auth travels on every
+# request), and set RANCH_SECRET_KEY so the Redis passwords Ranch stores in
+# its volume are encrypted.
+
+services:
+  ranch:
+    build:
+      context: ..
+    image: ranch:local
+    ports:
+      - "127.0.0.1:8080:8080" # loopback only: widen it behind a TLS proxy
+    environment:
+      RANCH_PASSWORD: ${RANCH_PASSWORD:?set RANCH_PASSWORD}
+      RANCH_USERNAME: ${RANCH_USERNAME:-ranch}
+      # RANCH_SECRET_KEY: ${RANCH_SECRET_KEY}   # encrypts stored Redis passwords
+      # Sign-in through an identity provider (Pocket ID, Authentik…) instead of,
+      # or on top of, the password. Callback to register: <RANCH_PUBLIC_URL>/auth/callback
+      # RANCH_OIDC_ISSUER: https://id.example.com
+      # RANCH_OIDC_CLIENT_ID: ${RANCH_OIDC_CLIENT_ID}
+      # RANCH_OIDC_CLIENT_SECRET: ${RANCH_OIDC_CLIENT_SECRET}
+      # RANCH_PUBLIC_URL: https://ranch.example.com
+      # RANCH_OIDC_ALLOWED_EMAILS: me@example.com
+    volumes:
+      - ranch-data:/data
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+volumes:
+  ranch-data:

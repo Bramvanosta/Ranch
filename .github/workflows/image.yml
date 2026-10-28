@@ -1,0 +1,83 @@
+# Build, smoke-test and push the Ranch server image to ghcr.io.
+#  - push to main          → :main (the latest state)
+#  - tag push vX.Y.Z       → :X.Y.Z (what a deployment pins) and :latest
+#  - tag push vX.Y.Z-rc.N  → :X.Y.Z-rc.N and :rc (a pre-release, :latest does not move)
+# The image is smoke-tested (scripts/smoke-test-image.sh) before anything is
+# pushed, and what is pushed is exactly the image that was tested.
+name: Server image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/bramvanosta/ranch
+
+jobs:
+  image:
+    # A fork has no right to push to this package.
+    if: github.repository == 'Bramvanosta/ranch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Version and tags
+        id: tags
+        run: |
+          set -eu
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            # The tag is the version: written into package.json / tauri.conf.json / Cargo.*,
+            # so the server reports it. A tag that is not a version stops here.
+            node scripts/set-version.mjs "$GITHUB_REF_NAME" > version.env
+            . ./version.env
+            if [ "$prerelease" = "true" ]; then TAGS="$version rc"; else TAGS="$version latest"; fi
+          else
+            version=main
+            TAGS=main
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+          echo "tags: $TAGS"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          # A plain single-platform image in the local daemon, for the smoke test.
+          provenance: false
+          tags: ranch:candidate
+          labels: |
+            org.opencontainers.image.source=https://github.com/Bramvanosta/ranch
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.version }}
+          cache-from: type=gha,scope=server-image
+          cache-to: type=gha,scope=server-image,mode=max
+      - name: Smoke test
+        run: sh scripts/smoke-test-image.sh ranch:candidate
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+        run: |
+          set -eu
+          for TAG in $TAGS; do
+            docker tag ranch:candidate "$IMAGE:$TAG"
+            docker push "$IMAGE:$TAG"
+            echo "pushed $IMAGE:$TAG"
+          done

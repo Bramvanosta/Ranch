@@ -1,0 +1,16 @@
+# `cargo audit` reads the whole lockfile, every target and feature included.
+# These advisories are reviewed and do not reach what Ranch ships.
+[advisories]
+ignore = [
+    # rsa, Marvin timing side channel; no fixed release exists. 0.9.x is in the
+    # lockfile through sqlx-mysql, which Ranch does not compile (SQLite only).
+    # 0.10.x signs SSH client authentication with an RSA key: one signature per
+    # connection, no decryption, no oracle an attacker could time.
+    "RUSTSEC-2023-0071",
+    # zip, extraction of untrusted archives: a Windows-only dependency of
+    # tauri-plugin-updater. Ranch ships macOS and Linux builds, and the updater
+    # only unpacks archives whose signature it has verified.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+]

@@ -1,0 +1,21 @@
+{
+  "queueRef": { "prefix": "bull", "name": "reminders" },
+  "jobId": "501",
+  "fields": {
+    "name": "send-reminder",
+    "data": "{\"userId\":\"u-7\",\"reminderType\":\"trial-ending\"}",
+    "opts": "{\"attempts\":2,\"delay\":86400000}",
+    "attemptsMade": "0",
+    "timestamp": "1700000000000",
+    "delay": "86400000"
+  },
+  "expected": {
+    "name": "send-reminder",
+    "state": "delayed",
+    "attemptsMade": 0,
+    "timestamp": 1700000000000,
+    "delay": 86400000,
+    "stacktraceCount": 0,
+    "dataPreview": { "userId": "u-7" }
+  }
+}

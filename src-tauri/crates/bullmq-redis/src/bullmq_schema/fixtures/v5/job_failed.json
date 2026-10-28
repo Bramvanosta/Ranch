@@ -1,0 +1,24 @@
+{
+  "queueRef": { "prefix": "bull", "name": "email" },
+  "jobId": "42",
+  "fields": {
+    "name": "send-email",
+    "data": "{\"to\":\"bob@example.com\"}",
+    "opts": "{\"attempts\":3}",
+    "attemptsMade": "3",
+    "timestamp": "1672531200000",
+    "processedOn": "1672531205000",
+    "finishedOn": "1672531206500",
+    "failedReason": "Connection refused",
+    "stacktrace": "[\"Error: Connection refused\",\"  at sendEmail (worker.js:42:11)\",\"  at process.run (queue.js:108:5)\"]"
+  },
+  "expected": {
+    "name": "send-email",
+    "state": "failed",
+    "attemptsMade": 3,
+    "timestamp": 1672531200000,
+    "failedReason": "Connection refused",
+    "stacktraceCount": 3,
+    "dataPreview": { "to": "bob@example.com" }
+  }
+}
