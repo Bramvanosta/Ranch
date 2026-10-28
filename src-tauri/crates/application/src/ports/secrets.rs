@@ -15,8 +15,8 @@ pub trait SecretStore: Send + Sync {
 
 /// The name a connection's password is kept under: its id. The other names
 /// are `{id}::…` (its SSH password, its host key pins) or the store's own
-/// (`ranch::integrity`, the key of the seals), so an id with `::` in it
-/// would name another secret, and names none.
+/// (`ranch::integrity`, where earlier releases kept the key of the seals),
+/// so an id with `::` in it would name another secret, and names none.
 pub fn password_entry(connection_id: &str) -> Result<&str, RanchError> {
     if connection_id.is_empty() || connection_id.contains("::") {
         return Err(RanchError::InvalidInput {

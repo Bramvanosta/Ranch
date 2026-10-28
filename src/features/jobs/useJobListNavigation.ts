@@ -11,14 +11,14 @@
  *   - `Enter`            → drill into the focused job
  *   - `cmd-R`            → retry the focused job
  *   - `cmd-Backspace`    → select the focused job and open the bulk bar's
- *                          "Remove… Enter to execute, Esc to cancel" step.
- *                          It used to delete the row on the spot: the first
- *                          row, for anyone who had not touched the arrows.
+ *                          "Remove… Enter to execute, Esc to cancel" step,
+ *                          never a removal on the spot (the first row, for
+ *                          anyone who had not touched the arrows).
  *   - `cmd-P`            → promote the focused job
  *
  * With jobs selected, the three chords belong to the `BulkActionBar` (which
- * previews before it acts): this hook stays out of it. It used to fire on
- * the focused row *as well*.
+ * previews before it acts): this hook stays out of it, and does not act on
+ * the focused row as well.
  *
  * Nothing is focused until a motion key is pressed: the first `j` / `↓`
  * marks the first row (it does not skip it), and `Enter` and the action

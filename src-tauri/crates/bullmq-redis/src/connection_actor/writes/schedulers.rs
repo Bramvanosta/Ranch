@@ -111,7 +111,15 @@ pub(crate) async fn handle_upsert_scheduler(
     caller: &Caller,
     token: &CancellationToken,
 ) -> Result<SchedulerSaved, RanchError> {
-    authorize_write(state, caller, "upsert_scheduler").await?;
+    let queue = QueueRef::parse(queue_id.as_str())?;
+    authorize_write(
+        state,
+        caller,
+        "upsert_scheduler",
+        AuditAction::UpsertScheduler,
+        AuditTarget::scheduler(&queue.id(), &queue.name, &spec.id),
+    )
+    .await?;
 
     let now = chrono::Utc::now();
     let prepared = spec
@@ -119,7 +127,7 @@ pub(crate) async fn handle_upsert_scheduler(
         .map_err(|reason| RanchError::InvalidInput { reason })?;
 
     let mut conn = open_redis_for_actor(state, token).await?;
-    let q = &QueueRef::parse(queue_id.as_str())?;
+    let q = &queue;
     let mut exists_cmd = redis::cmd("EXISTS");
     exists_cmd.arg(V5Keys.meta(q));
     let queue_exists: bool = tokio::select! {
@@ -228,7 +236,14 @@ pub(crate) async fn handle_remove_scheduler(
     token: &CancellationToken,
 ) -> Result<SchedulerActionResult, RanchError> {
     let queue = QueueRef::parse(args.queue_id.as_str())?;
-    authorize_write(state, caller, "remove_scheduler").await?;
+    authorize_write(
+        state,
+        caller,
+        "remove_scheduler",
+        AuditAction::RemoveScheduler,
+        AuditTarget::scheduler(&queue.id(), &queue.name, &args.scheduler_key),
+    )
+    .await?;
     let mut conn = open_redis_for_actor(state, token).await?;
     let keys = resolve_keys_for_queue(state, &mut conn, &queue, token).await?;
 
@@ -296,7 +311,14 @@ pub(crate) async fn handle_pause_scheduler(
     token: &CancellationToken,
 ) -> Result<SchedulerActionResult, RanchError> {
     let queue = QueueRef::parse(args.queue_id.as_str())?;
-    authorize_write(state, caller, "pause_scheduler").await?;
+    authorize_write(
+        state,
+        caller,
+        "pause_scheduler",
+        AuditAction::PauseScheduler,
+        AuditTarget::scheduler(&queue.id(), &queue.name, &args.scheduler_key),
+    )
+    .await?;
 
     let mut conn = open_redis_for_actor(state, token).await?;
     let keys = resolve_keys_for_queue(state, &mut conn, &queue, token).await?;
@@ -382,7 +404,14 @@ pub(crate) async fn handle_resume_scheduler(
     token: &CancellationToken,
 ) -> Result<SchedulerActionResult, RanchError> {
     let queue = QueueRef::parse(args.queue_id.as_str())?;
-    authorize_write(state, caller, "resume_scheduler").await?;
+    authorize_write(
+        state,
+        caller,
+        "resume_scheduler",
+        AuditAction::ResumeScheduler,
+        AuditTarget::scheduler(&queue.id(), &queue.name, &args.scheduler_key),
+    )
+    .await?;
 
     let mut conn = open_redis_for_actor(state, token).await?;
     let keys = resolve_keys_for_queue(state, &mut conn, &queue, token).await?;

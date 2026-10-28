@@ -3,7 +3,7 @@
 
 use tokio_util::sync::CancellationToken;
 
-use super::authorize::{authorize_bulk_write, write_audit_for_action};
+use super::authorize::{authorize_write, write_audit_for_action};
 use super::job_actions::{detect_job_state, run_promote_script, run_retry_script};
 use crate::bullmq_schema::maintenance::MoveCode;
 use crate::bullmq_schema::{KeyVariant, Keys, QueueRef};
@@ -209,7 +209,7 @@ macro_rules! bulk_handler_body {
         let queue = QueueRef::parse($args.queue_id.as_str())?;
         // 1. ONE authorization at the top: the lock decision, or the
         // human approval, applies to the whole bulk.
-        authorize_bulk_write(
+        authorize_write(
             $state,
             $caller,
             $tool,

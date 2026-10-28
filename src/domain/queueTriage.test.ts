@@ -52,6 +52,13 @@ describe("triageQueues", () => {
     expect(names(rest)).toEqual(["webhooks-outbound-retries-eu-west"])
   })
 
+  it("counts a paused queue's held jobs as waiting", () => {
+    const { problems } = triageQueues([q("orders", { paused: 100 }, true)], undefined, BULLMQ)
+    expect(problems.map((p) => [p.queue.name, p.problem, p.count])).toEqual([
+      ["orders", "paused", 100],
+    ])
+  })
+
   it("never calls a queue worker-less when the worker count is unknown", () => {
     const { problems, rest } = triageQueues([q("reports", { waiting: 3 })], undefined, BULLMQ)
     expect(problems).toEqual([])

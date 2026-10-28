@@ -41,7 +41,10 @@ export function describeCron(pattern: string): string | null {
   return null
 }
 
-/** What the table's Schedule column says. */
+/**
+ * What the table's Schedule column says. A pattern stored without a zone
+ * is read by each worker in its own local time: it says so.
+ */
 export function describeSchedule(s: Pick<CronJob, "pattern" | "every" | "tz">): {
   main: string
   plain: string | null
@@ -49,7 +52,8 @@ export function describeSchedule(s: Pick<CronJob, "pattern" | "every" | "tz">): 
   if (s.every !== null) return { main: `every ${formatEveryMs(s.every)}`, plain: null }
   const pattern = s.pattern ?? ""
   const plain = describeCron(pattern)
-  return { main: pattern, plain: plain && s.tz ? `${plain} (${s.tz})` : plain }
+  const zone = s.tz ?? "worker's local time"
+  return { main: pattern, plain: plain ? `${plain} (${zone})` : plain }
 }
 
 /**

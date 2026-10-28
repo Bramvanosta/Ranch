@@ -100,7 +100,7 @@ describe("FailureCausesView", () => {
       data: {
         jobs: [
           {
-            jobRef: { queue: queueId, id: "3" },
+            jobRef: { queueId, queueName: "emails", id: "3" },
             name: "send-email",
             failedReason: "connect ETIMEDOUT 10.0.4.12:5432",
             finishedOn: Date.now(),
@@ -153,6 +153,52 @@ describe("FailureCausesView", () => {
       }),
     )
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Retried 3 jobs"))
+  })
+
+  it("counts and acts on this queue's jobs only, not a same-named queue's", async () => {
+    // `app:emails` is another queue named "emails": causes are read by name.
+    const other = (id: string) => ({ queueId: "app:emails", queueName: "emails", id })
+    mocked.listFailureCauses.mockResolvedValue({
+      status: "ok",
+      data: {
+        causes: [
+          cause("connect ETIMEDOUT <ip>", ["3", "2"], {
+            count: 4,
+            jobs: [other("9"), { queueId, queueName: "emails", id: "3" }, other("8")].concat([
+              { queueId, queueName: "emails", id: "2" },
+            ]),
+          }),
+          cause("only elsewhere", [], { count: 1, jobs: [other("5")] }),
+        ],
+        scanned: 5,
+        scanCapped: false,
+        totalFailed: 5,
+        unreadableQueues: [],
+      },
+    })
+    mocked.bulkRemoveJobs.mockResolvedValue({
+      status: "ok",
+      data: { action: "remove", total: 2, succeeded: 2, failed: [], cancelled: false },
+    })
+    renderView()
+    const groups = await screen.findAllByTestId("failure-cause")
+    expect(groups).toHaveLength(1)
+    expect(screen.getByTestId("failure-causes-summary")).toHaveTextContent(
+      "1 cause · 2 failed jobs",
+    )
+    const remove = screen.getByTestId("failure-cause-remove")
+    expect(remove).toHaveTextContent("Remove 2")
+    fireEvent.click(remove)
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("failure-cause-confirm"))
+    })
+    await waitFor(() =>
+      expect(mocked.bulkRemoveJobs).toHaveBeenCalledWith({
+        connectionId: "c1",
+        queueId,
+        jobIds: ["3", "2"],
+      }),
+    )
   })
 
   it("on a protected connection, Remove N asks for the queue name and unlocks once", async () => {

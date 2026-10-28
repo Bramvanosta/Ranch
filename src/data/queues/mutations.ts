@@ -25,12 +25,11 @@ import { queueKeys } from "./keys"
  *     backend message, which already includes the unlock keystroke).
  *   - 2s success toast.
  *
- * On a slow link "the 1 s poll is fast enough" no longer held:
+ * On a slow link the 1 s poll is not fast enough:
  *   - the queue flips to paused / running at once (optimistic), and flips
  *     back with the reason if the action fails;
  *   - the queue list's poll waits while the action runs (`holdsPoll`), so a
- *     read sent before the change cannot put the old state back (the
- *     flicker the earlier design avoided by not flipping);
+ *     read sent before the change cannot put the old state back;
  *   - `onSettled` returns the refresh, so the button stays busy until the
  *     refreshed list confirms it.
  *

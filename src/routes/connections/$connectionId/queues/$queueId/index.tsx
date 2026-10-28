@@ -11,7 +11,7 @@ import { jobPageSize } from "@/data/settings/settings"
 import { useSetting } from "@/data/settings/useSetting"
 import { useWorkers } from "@/data/workers/queries"
 import type { PageSize } from "@/domain/pageSize"
-import { countOf } from "@/domain/stateCounts"
+import { countOf, knownCount } from "@/domain/stateCounts"
 import { FlowsView } from "@/features/flows"
 import {
   AddJobDialog,
@@ -274,10 +274,12 @@ function QueueDetailComponent() {
                 activeView === "jobs" ? activeState : undefined,
               ).map((t) => {
                 const count = countOf(queue?.counts, t.code)
+                // A state the backend does not count shows no number.
+                const known = knownCount(queue?.counts, t.code) !== undefined
                 return {
                   value: `state:${t.code}`,
                   label: t.label,
-                  count: queue ? count.toLocaleString() : undefined,
+                  count: queue && known ? count.toLocaleString() : undefined,
                   tone: t.code === "failed" && count > 0 ? ("danger" as const) : undefined,
                   testId: `job-state-tab-${t.code}`,
                 }

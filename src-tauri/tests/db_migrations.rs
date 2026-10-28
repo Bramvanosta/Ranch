@@ -125,6 +125,16 @@ async fn cause_notes_stored_with_a_prefix_move_to_the_queue_id() {
     pool.close().await;
 
     let db = Db::init(dir.path()).await.expect("upgrade");
+    // Copied beside itself before it was migrated, readable by its owner
+    // alone.
+    let backup = dir.path().join("ranch.db.bak-schema-10");
+    assert!(backup.exists(), "backed up before migrating");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&backup).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{mode:o}");
+    }
     let rows: Vec<(String, String, String)> =
         sqlx::query_as("SELECT id, queue_id, queue_name FROM cause_notes ORDER BY id")
             .fetch_all(db.pool())

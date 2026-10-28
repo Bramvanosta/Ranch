@@ -6,16 +6,31 @@ use crate::connection_actor::actor::ActorState;
 use ranch_domain::audit::{AuditAction, AuditOutcome, AuditTarget, Caller};
 use ranch_domain::errors::RanchError;
 
+/// Step 1 of a write. One refused by the lock leaves a failure row for
+/// its target, unit or bulk, so the log shows the attempt. Best effort:
+/// failing to record it never hides the refusal.
 pub(super) async fn authorize_write(
     state: &ActorState,
     caller: &Caller,
     tool: &str,
+    action: AuditAction,
+    target: AuditTarget,
 ) -> Result<(), RanchError> {
-    state
+    let decision = state
         .cfg
         .writes
         .authorize(&state.cfg.stamp(), state.lock_state, caller, tool)
-        .await
+        .await;
+    if let Err(RanchError::ConnectionLocked { .. }) = &decision {
+        let reason = Some("Connection locked".to_string());
+        let recorded =
+            write_audit_for_action(state, action, target, AuditOutcome::Failure, reason, caller)
+                .await;
+        if let Err(e) = recorded {
+            tracing::warn!(error = %e, "lock-rejection audit write failed");
+        }
+    }
+    decision
 }
 
 pub(super) async fn write_audit_for_action(
@@ -31,27 +46,4 @@ pub(super) async fn write_audit_for_action(
         .writes
         .record(&state.cfg.stamp(), caller, action, target, outcome, reason)
         .await
-}
-
-/// A bulk write refused by the lock leaves one failure row for the whole
-/// batch, so the log shows the attempt. Best effort: failing to record it
-/// never hides the refusal.
-pub(super) async fn authorize_bulk_write(
-    state: &ActorState,
-    caller: &Caller,
-    tool: &str,
-    action: AuditAction,
-    target: AuditTarget,
-) -> Result<(), RanchError> {
-    let decision = authorize_write(state, caller, tool).await;
-    if let Err(RanchError::ConnectionLocked { .. }) = &decision {
-        let reason = Some("Connection locked".to_string());
-        let recorded =
-            write_audit_for_action(state, action, target, AuditOutcome::Failure, reason, caller)
-                .await;
-        if let Err(e) = recorded {
-            tracing::warn!(error = %e, "bulk lock-rejection audit write failed");
-        }
-    }
-    decision
 }

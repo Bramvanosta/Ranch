@@ -1,6 +1,7 @@
 import { useMutation } from "@tanstack/react-query"
 import { toast } from "sonner"
 
+import { displayChord } from "@/commands/chords"
 import { Button } from "@/components/ui/button"
 import { hintDismissed, paletteRecents, welcomeDismissed } from "@/data/settings/settings"
 import { writeSetting } from "@/data/settings/useSetting"
@@ -50,7 +51,7 @@ export function AdvancedSection() {
           }
         />
         <SettingRow
-          label="Recent items in ⌘K"
+          label={`Recent items in ${displayChord("cmd+k")}`}
           hint="The palette forgets what you opened from it."
           control={
             <Button

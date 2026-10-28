@@ -70,7 +70,6 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             hierarchy::change_environment_color,
             // Environments as entities + moving connections.
             hierarchy::create_environment,
-            hierarchy::delete_environment,
             hierarchy::move_connection,
             // MCP safety settings (UI-only, MCP-forbidden).
             mcp_safety::get_mcp_safety_settings,
@@ -94,7 +93,6 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             mcp_activity::export_mcp_activity,
             mcp_activity::clear_mcp_activity,
             hierarchy::reorder_groups,
-            hierarchy::reorder_environments,
             // Groups as first-class entities (UI-only).
             groups::list_groups,
             groups::create_group,
@@ -168,8 +166,6 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             attention::list_attention,
             // MCP installer commands.
             mcp_installer::get_mcp_installer_status,
-            mcp_installer::install_mcp_for_claude_desktop,
-            mcp_installer::install_mcp_for_cursor,
             // Generic installer (Claude Code, Codex, Windsurf, …).
             mcp_installer::install_mcp_for_client,
             mcp_installer::get_mcp_manual_snippet,

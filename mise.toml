@@ -2,8 +2,9 @@
 # Every contributor and CI uses these exact versions.
 # Install with: mise install
 #
-# Bump rust/node by editing here, run `mise install`, commit the change.
+# Bump node by editing here, run `mise install`, commit the change. Rust is
+# rust-toolchain.toml's version: bump it there (it says where else).
 
 [tools]
-rust = "latest"
+rust = "1.99.1" # same as rust-toolchain.toml
 node = "24"

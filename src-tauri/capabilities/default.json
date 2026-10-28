@@ -35,7 +35,7 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         {
-          "url": "https://github.com/Bramvanosta/ranch/*"
+          "url": "https://github.com/Bramvanosta/Ranch/*"
         },
         {
           "url": "https://github.com/Bramvanosta/Ranch/*"

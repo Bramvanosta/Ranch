@@ -304,6 +304,40 @@ async fn the_apps_approval_is_honoured_and_bound_to_the_call() {
 }
 
 #[tokio::test]
+async fn an_approval_sheet_rewritten_by_another_process_runs_nothing() {
+    let e = env().await;
+    write_heartbeat(&e.kv).await.unwrap();
+    let (gui, kv, seals) = app(&e);
+    tokio::spawn(async move {
+        loop {
+            if let Some(first) = approval::list_pending(&gui, &kv).await.unwrap().first() {
+                // The sheet now says a harmless local call; the call is the
+                // one ranch-mcp asked for.
+                sqlx::query(
+                    "UPDATE mcp_pending_approvals
+                        SET connection_name = 'scratch', environment_name = 'Local',
+                            env_color = 'env-local', target_preview_json = '{\"count\":3}'
+                      WHERE id = ?",
+                )
+                .bind(&first.id)
+                .execute(&gui)
+                .await
+                .unwrap();
+                approval::decide(&gui, &*seals, &first.id, ApprovalDecision::Approve, None)
+                    .await
+                    .unwrap();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let err = gate::request_approval(&e.pool, &e.kv, sealer(&e), request(&e))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, RanchError::ApprovalDenied { .. }), "{err:?}");
+}
+
+#[tokio::test]
 async fn a_connection_pointed_elsewhere_behind_the_apps_back_is_not_opened() {
     let e = env().await;
     let kc: Arc<dyn SecretStore> = Arc::new(InMemoryKeychain::new());

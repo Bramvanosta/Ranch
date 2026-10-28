@@ -9,7 +9,7 @@ import {
 import { useRefreshSettings } from "@/data/settings/useRefreshSettings"
 
 /**
- * Settings → Refresh: how often Ranch asks Redis again.
+ * Settings › Refresh: how often Ranch asks Redis again.
  * On a pay-per-command Redis, every poll is billed; on a busy one, 1 s is
  * what you want.
  */

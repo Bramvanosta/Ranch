@@ -18,11 +18,12 @@
 // pre-release channel. That release is marked pre-release itself, so GitHub
 // never shows it as the latest one.
 //
-// Every build job runs this for its own platform; none waits for the others.
-// The manifest is therefore never edited: it is rebuilt from the platform files
-// of the tag, so the job that finishes last publishes the complete one, and a
-// re-run heals a manifest that lost a race. A manifest is never replaced by an
-// older version (a re-run of an old tag leaves the channels alone).
+// release.yml's `publish` job runs this once per platform, one after the
+// other, once the release is public. The manifest is never edited: it is
+// rebuilt from the platform files of the tag, so each run publishes every
+// platform published so far, and a re-run heals a manifest that is missing one.
+// A manifest is never replaced by an older version (a re-run of an old tag
+// leaves the channels alone).
 //
 // Environment: GITHUB_TOKEN (contents: write), GITHUB_REPOSITORY (owner/name);
 // GITHUB_API_URL and GITHUB_SERVER_URL when not github.com (Actions sets them).
@@ -80,11 +81,12 @@ const plain = (text) => text.replace(/\*\*(.+?)\*\*/g, "$1").replace(/`([^`]+)`/
  *     `###`. Write one for every release;
  *   - without one, the lead of each bullet (its bold sentence), a few of them.
  *
- * Plain text: the dialog does not render Markdown. A pre-release has no
- * section of its own: `null`. (release.yml puts the same text on the release page.)
+ * Plain text: the dialog does not render Markdown. HTML comments (notes to
+ * whoever edits the file) are not part of it. A pre-release has no section of
+ * its own: `null`. (release.yml puts the same text on the release page.)
  */
 export function extractNotes(changelog, version, maxItems = 8) {
-  const lines = (changelog ?? "").split("\n")
+  const lines = (changelog ?? "").replace(/<!--[\s\S]*?-->/g, "").split("\n")
   const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   const start = lines.findIndex((l) => new RegExp(`^## \\[v?${escaped}\\]`).test(l))
   if (start === -1) return null
@@ -276,7 +278,8 @@ export async function publishUpdate({
 }) {
   const version = tag.replace(/^v/, "")
 
-  // The release is created by another job; give it a moment to show.
+  // The release is created by another job; give it a moment to show (a
+  // draft does not: it is published before this runs).
   let release = null
   for (let attempt = 0; attempt < 10 && !release; attempt++) {
     release = await gh.releaseByTag(tag)

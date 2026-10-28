@@ -203,7 +203,7 @@ export function JobActions({
         onClick={handleRemove}
         testId="job-actions-remove"
         variant="danger"
-        hint="Delete this job from Redis"
+        hint="Remove this job from Redis"
       />
       <ConfirmSheet
         open={confirmingRemove}

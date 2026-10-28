@@ -10,7 +10,7 @@ const THEMES = [
 ] as const
 
 /**
- * Settings → Appearance: light, dark, or follow the OS.
+ * Settings › Appearance: light, dark, or follow the OS.
  * Applied at once and remembered (`next-themes`, mounted at the app root).
  */
 export function AppearanceSection() {

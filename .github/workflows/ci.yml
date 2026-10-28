@@ -1,5 +1,6 @@
 # CI: the gate of every pull request, and of main.
 #  - frontend   Biome, types, unit tests, no credentials in SQL migrations
+#  - migrations pull requests only: no shipped SQL migration changes
 #  - overflow   no clipped or overlapping text, in Playwright's own image
 #  - server     the Rust core with the `server` feature (the Docker image's binary)
 #  - desktop    the Rust core with the `desktop` feature (Tauri), integration tests included
@@ -45,6 +46,23 @@ jobs:
         run: pnpm typecheck
       - name: Unit tests
         run: pnpm test
+
+  migrations:
+    # sqlx refuses to start when an applied migration's file changed: a
+    # shipped migration is never edited (scripts/check-migrations-unchanged.sh).
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          # The base branch and the release tags, to compare with.
+          fetch-depth: 0
+      - name: No shipped migration changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bash scripts/check-migrations-unchanged.sh "origin/$BASE_REF"
 
   playwright-version:
     # The overflow job's image must carry the browsers of the @playwright/test
@@ -100,9 +118,10 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      # The latest stable, like mise.toml's `rust = "latest"`.
+      # rust-toolchain.toml's version (mise.toml and the release builds use it too).
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: 1.99.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -148,6 +167,7 @@ jobs:
             librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: 1.99.1
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -199,8 +219,8 @@ jobs:
           # A plain single-platform image in the local daemon, for the smoke test.
           provenance: false
           tags: ranch:ci
-          # Layers shared with image.yml: a pull request reuses main's.
-          cache-from: type=gha,scope=server-image
-          cache-to: type=gha,scope=server-image,mode=max
+          # Layers shared with image.yml's amd64 build: a pull request reuses main's.
+          cache-from: type=gha,scope=server-image-amd64
+          cache-to: type=gha,scope=server-image-amd64,mode=max
       - name: Smoke test
         run: sh scripts/smoke-test-image.sh ranch:ci

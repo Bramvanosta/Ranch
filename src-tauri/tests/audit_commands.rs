@@ -344,3 +344,34 @@ async fn listing_carries_the_group_and_environment_of_the_connection() {
         Some("Acme · gone-for-good")
     );
 }
+
+/// A row that does not read (an action this version does not know, say)
+/// is left out; the rest of the page still shows.
+#[tokio::test]
+async fn an_unreadable_row_does_not_hide_the_others() {
+    let (_dir, db) = fresh_db().await;
+    record(
+        db.pool(),
+        entry(1, "c1", AuditAction::RemoveJob, AuditSource::Ui),
+    )
+    .await
+    .unwrap();
+    record(
+        db.pool(),
+        entry(2, "c1", AuditAction::RemoveJob, AuditSource::Ui),
+    )
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE audit_log_entries SET action = 'teleportJob' WHERE target_payload LIKE '%job-2%'",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let entries: Vec<AuditLogEntry> =
+        list_audit_log_entries_inner(args_for(Some("c1"), None, None), db.pool())
+            .await
+            .unwrap();
+    assert_eq!(entries.len(), 1);
+}

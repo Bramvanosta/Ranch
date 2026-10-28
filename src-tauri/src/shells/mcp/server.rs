@@ -381,7 +381,7 @@ pub struct UpsertSchedulerInput {
     /// `*`, lists, ranges, steps, month / weekday names.
     #[serde(default)]
     pub pattern: Option<String>,
-    /// IANA timezone the pattern is read in (default UTC), e.g. `Europe/Paris`.
+    /// IANA timezone the pattern is read in, e.g. `Europe/Paris`. Omitted: UTC, stored as such.
     #[serde(default)]
     pub tz: Option<String>,
     /// Fixed interval in milliseconds (min 1000), instead of `pattern`.
@@ -779,7 +779,8 @@ impl RanchMcpServer {
              One call = one approval, so prefer a bulk_* tool over many single calls, and \
              wait for a decision before asking again. To explain a failure to the user, find \
              its cause with list_failure_causes and attach your diagnosis with annotate_cause \
-             (no approval needed: it changes no queue state). \
+             (no approval needed, it changes no queue state, unless the user asks for \
+             approval of every call). \
              A queue is named by the `id` list_queues gives it, `queueId` in every other \
              tool and in every job a tool returns: pass it as given, never build one. \
              Errors carry a machine-readable `data.kind`: `blockedReadonly` \
@@ -842,9 +843,16 @@ impl RanchMcpServer {
             })?;
         let settings = self.state.settings.as_ref();
         let repository = self.state.repository.as_ref();
-        let needs_approval = precheck(settings, repository, tool, kind, connection_id)
-            .await
-            .map_err(Self::err_to_mcp)?;
+        let needs_approval = match precheck(settings, repository, tool, kind, connection_id).await {
+            Ok(needs_approval) => needs_approval,
+            Err(refused) => {
+                if matches!(refused, RanchError::ConnectionLocked { .. }) {
+                    self.record_lock_refusal(tool, connection_id, &arguments)
+                        .await;
+                }
+                return Err(Self::err_to_mcp(refused));
+            }
+        };
         if !needs_approval {
             return Ok(None);
         }
@@ -1055,6 +1063,72 @@ impl RanchMcpServer {
             .unwrap_or_else(|| queue_id.0.clone())
     }
 
+    /// A write refused by the lock at the gate leaves a failure row, as one
+    /// refused by the connection's write loop does: the log shows the
+    /// attempt. Best effort: failing to record it never hides the refusal.
+    async fn record_lock_refusal(
+        &self,
+        tool: &str,
+        connection_id: &str,
+        arguments: &serde_json::Value,
+    ) {
+        use crate::application::writes::ConnectionStamp;
+        use crate::domain::audit::{AuditOutcome, AuditTarget};
+        use crate::domain::queues::QueueId as DomainQueueId;
+
+        let Some(action) = audit_action_of(tool) else {
+            return;
+        };
+        let Ok(Some(stored)) = self.state.repository.stored_settings(connection_id).await else {
+            return;
+        };
+        fn text<'a>(arguments: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+            arguments.get(key).and_then(serde_json::Value::as_str)
+        }
+        let target = match text(arguments, "queueId") {
+            Some(queue_id) => {
+                let name = self
+                    .queue_label(connection_id, &McpQueueId(queue_id.to_string()))
+                    .await;
+                let id = DomainQueueId::new(queue_id);
+                if let Some(jobs) = arguments
+                    .get("jobIds")
+                    .and_then(serde_json::Value::as_array)
+                {
+                    AuditTarget::bulk_jobs(&id, &name, jobs.len() as u32)
+                } else if let Some(job_id) = text(arguments, "jobId") {
+                    AuditTarget::job(&id, &name, job_id)
+                } else if let Some(key) =
+                    text(arguments, "schedulerKey").or_else(|| text(arguments, "schedulerId"))
+                {
+                    AuditTarget::scheduler(&id, &name, key)
+                } else {
+                    AuditTarget::queue(&id, &name)
+                }
+            }
+            None => AuditTarget::Connection,
+        };
+        let stamp = ConnectionStamp {
+            id: connection_id.to_string(),
+            name: stored.name,
+            env_color: stored.env_color,
+        };
+        let caller = self.agent_caller().await;
+        let recorded = crate::adapters::sqlite::write_pipeline(&self.state.pool)
+            .record(
+                &stamp,
+                &caller,
+                action,
+                target,
+                AuditOutcome::Failure,
+                Some("Connection locked".to_string()),
+            )
+            .await;
+        if let Err(e) = recorded {
+            tracing::warn!(error = %e, "lock-rejection audit write failed");
+        }
+    }
+
     /// Build an `Caller` for the MCP destructive
     /// tool path. Reads the cached `ClientInfo` (set by the
     /// `initialize` hook); falls back to `"mcp-stdio"` when no client
@@ -1095,6 +1169,26 @@ impl RanchMcpServer {
     }
 }
 
+/// The audit action a write tool records.
+fn audit_action_of(tool: &str) -> Option<crate::domain::audit::AuditAction> {
+    use crate::domain::audit::AuditAction;
+    Some(match tool {
+        "retry_job" | "bulk_retry_jobs" => AuditAction::RetryJob,
+        "remove_job" | "bulk_remove_jobs" => AuditAction::RemoveJob,
+        "promote_job" | "bulk_promote_jobs" => AuditAction::PromoteJob,
+        "add_job" => AuditAction::AddJob,
+        "drain_queue" => AuditAction::DrainQueue,
+        "clean_queue" => AuditAction::CleanQueue,
+        "pause_queue" => AuditAction::PauseQueue,
+        "resume_queue" => AuditAction::ResumeQueue,
+        "pause_scheduler" => AuditAction::PauseScheduler,
+        "resume_scheduler" => AuditAction::ResumeScheduler,
+        "upsert_scheduler" => AuditAction::UpsertScheduler,
+        "remove_scheduler" => AuditAction::RemoveScheduler,
+        _ => return None,
+    })
+}
+
 #[tool_router(router = tool_router)]
 impl RanchMcpServer {
     /// List every saved connection: where it sits, its backend and where
@@ -1125,7 +1219,7 @@ impl RanchMcpServer {
     /// List the BullMQ queues discovered on a connection, each with its
     /// jobs per state.
     #[tool(
-        description = "List BullMQ queues on a connection. Each queue carries `counts`: jobs per state code (`waiting`, `active`, `completed`, `failed`, `delayed`, `prioritized`, `paused`); a state that is absent holds no job."
+        description = "List BullMQ queues on a connection. Each queue carries `counts`: jobs per state code (`waiting`, `active`, `completed`, `failed`, `delayed`, `prioritized`, `paused`); a state that is absent was not counted (BullMQ's `waitingChildren`): list its jobs to know."
     )]
     pub async fn list_queues(
         &self,
@@ -1436,16 +1530,18 @@ impl RanchMcpServer {
         }))
     }
 
-    /// Leave a resolution note on a cause. No approval:
-    /// a note changes no queue state; refused on a connection that is
-    /// read-only for agents, and with AI features off like every tool.
+    /// Leave a resolution note on a cause. No approval, a note changes no
+    /// queue state, unless the user asks for approval of every call; refused
+    /// on a connection that is read-only for agents, and with AI features off
+    /// like every tool.
     #[tool(
-        description = "Attach your diagnosis to a failure cause so the user sees it next to the failures in Ranch: `text` (what is wrong, why) and `steps` (what to do, in order). Identify the cause by `signature` (from `list_failure_causes`) and one of its queues. Needs no approval (it changes no queue state) but is refused on connections that are read-only for agents."
+        description = "Attach your diagnosis to a failure cause so the user sees it next to the failures in Ranch: `text` (what is wrong, why) and `steps` (what to do, in order). Identify the cause by `signature` (from `list_failure_causes`) and one of its queues. Needs no approval (it changes no queue state) unless the user asks for approval of every call, and is refused on connections that are read-only for agents."
     )]
     pub async fn annotate_cause(
         &self,
         input: Parameters<AnnotateCauseInput>,
     ) -> Result<String, ErrorData> {
+        use crate::core::mcp::approval::{approval_mode, ApprovalMode};
         use crate::core::mcp::gate::{check_mcp_readonly, ToolKind};
         let i = input.0;
         check_mcp_readonly(
@@ -1457,6 +1553,18 @@ impl RanchMcpServer {
         )
         .await
         .map_err(Self::err_to_mcp)?;
+        // Asked for every call, the user approves a note like the rest.
+        if approval_mode(self.state.settings.as_ref())
+            .await
+            .map_err(Self::err_to_mcp)?
+            == ApprovalMode::All
+        {
+            let arguments = serde_json::to_value(&i).unwrap_or_default();
+            self.gate("annotate_cause", &i.connection_id, arguments, async {
+                Ok(None)
+            })
+            .await?;
+        }
         let client = self
             .client_info
             .lock()
@@ -1465,9 +1573,16 @@ impl RanchMcpServer {
             .map(|c| c.name.clone())
             .unwrap_or_else(|| "agent".to_string());
         // The note reads no Redis: the queue's name is the agent's, or its id.
+        // It ends up in prompts and on screen: one short line, no control
+        // characters, or the id.
         let queue_name = i
             .queue
-            .filter(|name| !name.trim().is_empty())
+            .map(|name| name.trim().to_string())
+            .filter(|name| {
+                !name.is_empty()
+                    && name.chars().count() <= 200
+                    && !name.chars().any(char::is_control)
+            })
             .unwrap_or_else(|| i.queue_id.0.clone());
         let note = crate::core::cause_notes::annotate(
             &self.state.pool,
@@ -1681,7 +1796,7 @@ impl RanchMcpServer {
     /// sees the schedule, when it next runs and the data template. An invalid
     /// pattern / timezone is refused before anyone is asked.
     #[tool(
-        description = "Create a job scheduler, or change an existing one (same schedulerId): jobName + either a cron `pattern` (5 fields, or 6 with seconds first; optional IANA `tz`) or `everyMs` (fixed interval, min 1000), and an optional JSON `data` template. Workers of the queue run the jobs it produces. Returns the next run and the id of the pending job."
+        description = "Create a job scheduler, or change an existing one (same schedulerId): jobName + either a cron `pattern` (5 fields, or 6 with seconds first; optional IANA `tz`, UTC when omitted) or `everyMs` (fixed interval, min 1000), and an optional JSON `data` template. Workers of the queue run the jobs it produces. Returns the next run and the id of the pending job."
     )]
     pub async fn upsert_scheduler(
         &self,

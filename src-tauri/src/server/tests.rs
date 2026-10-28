@@ -178,6 +178,42 @@ async fn everything_but_healthz_needs_the_password() {
 }
 
 #[tokio::test]
+async fn too_many_wrong_passwords_close_basic_sign_in_for_everyone() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = router(
+        app_state(dir.path()).await,
+        &config(dir.path(), password_auth()),
+    );
+    // Many connections at once: the per-request delay alone would not slow
+    // them down.
+    let mut guesses = tokio::task::JoinSet::new();
+    for n in 0..MAX_FAILED_LOGINS {
+        let app = app.clone();
+        guesses.spawn(async move {
+            let guess = basic("ranch", &format!("guess-{n}"));
+            app.oneshot(invoke_request("list_groups", json!({}), Some(&guess)))
+                .await
+                .unwrap()
+                .status()
+        });
+    }
+    while let Some(status) = guesses.join_next().await {
+        assert_eq!(status.unwrap(), StatusCode::UNAUTHORIZED);
+    }
+    // The right password is not even checked until the window passes.
+    let right = app
+        .oneshot(invoke_request(
+            "list_groups",
+            json!({}),
+            Some(&basic("ranch", "s3cret")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(right.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(right.headers()[header::RETRY_AFTER], "60");
+}
+
+#[tokio::test]
 async fn the_api_refuses_a_request_a_foreign_page_could_forge() {
     let dir = tempfile::tempdir().unwrap();
     let app = router(app_state(dir.path()).await, &config(dir.path(), Auth::None));

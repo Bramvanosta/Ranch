@@ -40,11 +40,6 @@ export const commands = {
 	 */
 	createEnvironment: (args: CreateEnvironmentArgs) => typedError<string, RanchErrorDto>(__TAURI_INVOKE("create_environment", { args })),
 	/**
-	 *  Delete an environment, only when it holds no connection (emptied
-	 *  environments are kept around as drop targets; this is how they go away).
-	 */
-	deleteEnvironment: (environmentId: string) => typedError<null, RanchErrorDto>(__TAURI_INVOKE("delete_environment", { environmentId })),
-	/**
 	 *  Move a connection to another environment (any group). The connection id,
 	 *  its credentials and its live actor are untouched, except when the move
 	 *  enters Production: the connection is locked (the safe direction)
@@ -111,7 +106,6 @@ export const commands = {
 	// Returns how many events were removed.
 	clearMcpActivity: () => typedError<number, RanchErrorDto>(__TAURI_INVOKE("clear_mcp_activity")),
 	reorderGroups: (args: ReorderGroupsArgs) => typedError<null, RanchErrorDto>(__TAURI_INVOKE("reorder_groups", { args })),
-	reorderEnvironments: (args: ReorderEnvironmentsArgs) => typedError<null, RanchErrorDto>(__TAURI_INVOKE("reorder_environments", { args })),
 	listGroups: () => typedError<Group[], RanchErrorDto>(__TAURI_INVOKE("list_groups")),
 	createGroup: (args: CreateGroupArgs) => typedError<Group, RanchErrorDto>(__TAURI_INVOKE("create_group", { args })),
 	renameGroup: (args: RenameGroupArgs) => typedError<Group, RanchErrorDto>(__TAURI_INVOKE("rename_group", { args })),
@@ -216,11 +210,8 @@ export const commands = {
 	readQueueEvents: (args: ReadQueueEventsArgs) => typedError<QueueEvents, RanchErrorDto>(__TAURI_INVOKE("read_queue_events", { args })),
 	listAttention: (args: ListAttentionArgs) => typedError<AttentionReport, RanchErrorDto>(__TAURI_INVOKE("list_attention", { args })),
 	getMcpInstallerStatus: () => typedError<McpInstallerOverview, RanchErrorDto>(__TAURI_INVOKE("get_mcp_installer_status")),
-	installMcpForClaudeDesktop: () => typedError<McpInstallerStatus, RanchErrorDto>(__TAURI_INVOKE("install_mcp_for_claude_desktop")),
-	installMcpForCursor: () => typedError<McpInstallerStatus, RanchErrorDto>(__TAURI_INVOKE("install_mcp_for_cursor")),
 	/**
-	 *  One install command for every client (the two per-client
-	 *  commands above predate it and stay for compatibility).
+	 *  Installs Ranch's MCP server in one client's config.
 	 */
 	installMcpForClient: (client: McpClient) => typedError<McpInstallerStatus, RanchErrorDto>(__TAURI_INVOKE("install_mcp_for_client", { client })),
 	getMcpManualSnippet: () => typedError<McpManualSnippet, RanchErrorDto>(__TAURI_INVOKE("get_mcp_manual_snippet")),
@@ -1974,11 +1965,6 @@ export type RenameEnvironmentArgs = {
 export type RenameGroupArgs = {
 	id: string,
 	name: string,
-};
-
-export type ReorderEnvironmentsArgs = {
-	groupId: string,
-	orderedIds: string[],
 };
 
 export type ReorderGroupsArgs = {

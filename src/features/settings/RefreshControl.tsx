@@ -14,10 +14,10 @@ import { cn } from "@/lib/utils"
  * everything on screen that belongs to the connection. When auto-refresh is
  * off, says so: what is on screen is as old as the last click.
  *
- * The icon turns for **this click** only, until what it asked for is back. It
- * used to turn whenever any query of the connection was in flight: with
- * auto-refresh on and a Redis a few tens of milliseconds away, one always is,
- * and the icon never stopped.
+ * The icon turns for **this click** only, until what it asked for is back.
+ * Not while any query of the connection is in flight: with auto-refresh on
+ * and a Redis a few tens of milliseconds away, one always is, and the icon
+ * would never stop.
  *
  * Next to it, how fresh the connection's counters are (the
  * queue list every connection screen shows): Live, late, or failing.
@@ -56,7 +56,7 @@ export function RefreshControl({
         <span
           className="text-2xs italic text-(--text2)"
           data-testid="auto-refresh-off"
-          title="Turn it back on in Settings → Refresh"
+          title="Turn it back on in Settings › Refresh"
         >
           auto-refresh off
         </span>

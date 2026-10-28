@@ -10,6 +10,8 @@
 //! Service name = `dev.ranch.app` (matches `tauri.conf.json` identifier).
 //! Each connection's credential is stored under that service with the
 //! connection's id as the username (`ports::secrets::password_entry`).
+//! The key of the seals has a service of its own, `dev.ranch.app.integrity`
+//! (`OsKeychain::for_integrity_key`), so no connection can name it.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -20,21 +22,33 @@ use ranch_domain::errors::RanchError;
 #[cfg(feature = "os-keychain")]
 const SERVICE: &str = "dev.ranch.app";
 #[cfg(feature = "os-keychain")]
+const INTEGRITY_SERVICE: &str = "dev.ranch.app.integrity";
+#[cfg(feature = "os-keychain")]
 const KEYCHAIN_DOC_URL: &str =
-    "https://github.com/Bramvanosta/ranch/blob/main/docs/keychain-setup.md";
+    "https://github.com/Bramvanosta/Ranch/blob/main/docs/keychain-setup.md";
 
 /// The OS keychain, and everything that names the `keyring` crate: feature
 /// `os-keychain`, which the desktop app and `ranch-mcp` enable. A container has no keychain: the server uses `FileSecretStore`.
 #[cfg(feature = "os-keychain")]
 mod os {
-    use super::{RanchError, SecretStore, KEYCHAIN_DOC_URL, SERVICE};
+    use super::{RanchError, SecretStore, INTEGRITY_SERVICE, KEYCHAIN_DOC_URL, SERVICE};
 
-    /// Real OS-backed keychain via the `keyring` crate.
-    pub struct OsKeychain;
+    /// Real OS-backed keychain via the `keyring` crate, one service.
+    pub struct OsKeychain {
+        service: &'static str,
+    }
 
     impl OsKeychain {
+        /// The connections' secrets.
         pub fn new() -> Self {
-            Self
+            Self { service: SERVICE }
+        }
+
+        /// The key of the seals, and nothing else.
+        pub fn for_integrity_key() -> Self {
+            Self {
+                service: INTEGRITY_SERVICE,
+            }
         }
     }
 
@@ -46,12 +60,14 @@ mod os {
 
     impl SecretStore for OsKeychain {
         fn set(&self, connection_id: &str, secret: &str) -> Result<(), RanchError> {
-            let entry = keyring::Entry::new(SERVICE, connection_id).map_err(map_unavailable)?;
+            let entry =
+                keyring::Entry::new(self.service, connection_id).map_err(map_unavailable)?;
             entry.set_password(secret).map_err(map_unavailable)
         }
 
         fn get(&self, connection_id: &str) -> Result<Option<String>, RanchError> {
-            let entry = keyring::Entry::new(SERVICE, connection_id).map_err(map_unavailable)?;
+            let entry =
+                keyring::Entry::new(self.service, connection_id).map_err(map_unavailable)?;
             match entry.get_password() {
                 Ok(secret) => Ok(Some(secret)),
                 Err(keyring::Error::NoEntry) => Ok(None),
@@ -60,7 +76,8 @@ mod os {
         }
 
         fn delete(&self, connection_id: &str) -> Result<(), RanchError> {
-            let entry = keyring::Entry::new(SERVICE, connection_id).map_err(map_unavailable)?;
+            let entry =
+                keyring::Entry::new(self.service, connection_id).map_err(map_unavailable)?;
             match entry.delete_credential() {
                 Ok(()) => Ok(()),
                 Err(keyring::Error::NoEntry) => Ok(()),

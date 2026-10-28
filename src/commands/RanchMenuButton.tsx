@@ -16,6 +16,7 @@ import { useAiEnabled } from "@/lib/ai/aiFeatures"
 import { displayChord } from "./chords"
 import { commandState, runCommand, useCommandHandlers } from "./handlers"
 import { type MenuEntry, menuEntries, visibleMenus } from "./menuModel"
+import { useMenuSupports } from "./useMenuSupports"
 
 /**
  * The menu bar of the browser runtimes: a
@@ -25,6 +26,8 @@ import { type MenuEntry, menuEntries, visibleMenus } from "./menuModel"
 export function RanchMenuButton() {
   // The Agents menu comes and goes with AI features.
   useAiEnabled()
+  // What the connection on screen does not declare is left out.
+  const { supports } = useMenuSupports()
   const handlers = useCommandHandlers((s) => s.handlers)
   const item = (id: string, shortcut?: string) => {
     const state = commandState(handlers, id)
@@ -71,11 +74,11 @@ export function RanchMenuButton() {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-52">
-        {visibleMenus().map((menu) => (
+        {visibleMenus(supports).map((menu) => (
           <DropdownMenuSub key={menu}>
             <DropdownMenuSubTrigger>{menu}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="min-w-64">
-              {render(menuEntries(menu))}
+              {render(menuEntries(menu, supports))}
             </DropdownMenuSubContent>
           </DropdownMenuSub>
         ))}

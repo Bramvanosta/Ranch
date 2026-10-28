@@ -31,14 +31,13 @@ pub const AI_ENABLED_KEY: &str = SafetySetting::AiEnabled.key();
 /// read error counts as off, so a broken database never lets an agent in.
 pub async fn ai_enabled(settings: &dyn SettingsStore) -> bool {
     match settings.safety(SafetySetting::AiEnabled).await {
-        // Someone else wrote it: off. A keychain that cannot be read leaves
-        // the value as it is (writes stay blocked, see `effective_mcp_readonly`).
+        // Only a value the app sealed turns AI on: one someone else wrote,
+        // or one whose seal cannot be checked (the key is unreadable), is off.
         Ok(Sealed {
-            check: Check::Invalid,
-            ..
-        }) => false,
-        Ok(Sealed { value, .. }) => value.as_deref() != Some("false"),
-        Err(_) => false,
+            value,
+            check: Check::Valid,
+        }) => value.as_deref() != Some("false"),
+        _ => false,
     }
 }
 
@@ -209,13 +208,15 @@ pub async fn request_approval(
         arguments: request.arguments,
         target_preview: request.target_preview,
     };
-    let id = approval::enqueue(pool, settings, &new).await?;
+    let (id, shown) = approval::enqueue_shown(pool, settings, &new).await?;
 
     let interval = approval::APPROVAL_POLL_INTERVAL;
     match approval::poll_decision(pool, settings, &id, timeout, interval).await? {
         // "approved" alone is a word in a file any process can write: only
         // the app's seal over this very call counts.
-        PollOutcome::Approved if !approval::sealed_by_the_app(pool, sealer, &id, &new).await? => {
+        PollOutcome::Approved
+            if !approval::sealed_by_the_app(pool, sealer, &id, &new, &shown).await? =>
+        {
             Err(RanchError::ApprovalDenied {
                 tool: request.tool,
                 reason: Some("Ranch could not verify this approval; nothing was done".to_string()),

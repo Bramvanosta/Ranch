@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 
-use crate::application::ports::sealer::{approval_parts, Check, Sealer};
+use crate::application::ports::sealer::{approval_parts, ApprovalShown, Check, Sealer};
 use crate::application::ports::settings::{SafetySetting, Sealed};
 use crate::application::ports::SettingsStore;
 use crate::core::mcp::gate::ToolKind;
@@ -156,12 +156,47 @@ pub enum PollOutcome {
 /// the user under them until they approve without reading.
 pub const MAX_PENDING: i64 = 5;
 
+/// How a request is shown on the approval sheet: the connection as it was
+/// displayed when the request was written, and the preview. `ranch-mcp`
+/// keeps what it wrote, and the app's seal covers it, so a row rewritten
+/// before the human decides runs nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShownTarget {
+    pub connection_name: String,
+    pub group_name: String,
+    pub environment_name: String,
+    pub env_color: String,
+    pub target_preview_json: Option<String>,
+}
+
+impl ShownTarget {
+    fn parts(&self) -> ApprovalShown<'_> {
+        ApprovalShown {
+            connection_name: &self.connection_name,
+            group_name: &self.group_name,
+            environment_name: &self.environment_name,
+            env_color: &self.env_color,
+            target_preview_json: self.target_preview_json.as_deref(),
+        }
+    }
+}
+
 /// Insert a `pending` request, snapshotting how the connection is displayed.
 pub async fn enqueue(
     pool: &SqlitePool,
     settings: &dyn SettingsStore,
     new: &NewApproval,
 ) -> Result<String, RanchError> {
+    enqueue_shown(pool, settings, new).await.map(|(id, _)| id)
+}
+
+/// [`enqueue`], and how the request is shown: what the app's seal on its
+/// approval must cover ([`sealed_by_the_app`]).
+pub async fn enqueue_shown(
+    pool: &SqlitePool,
+    settings: &dyn SettingsStore,
+    new: &NewApproval,
+) -> Result<(String, ShownTarget), RanchError> {
     // AI features may have been turned off since the call passed its first
     // check: nothing new waits for a decision then.
     if !crate::core::mcp::gate::ai_enabled(settings).await {
@@ -198,6 +233,13 @@ pub async fn enqueue(
         snapshot.ok_or_else(|| RanchError::ConnectionNotFound {
             id: new.connection_id.clone(),
         })?;
+    let shown = ShownTarget {
+        connection_name,
+        group_name,
+        environment_name,
+        env_color,
+        target_preview_json: new.target_preview.as_ref().map(|v| v.to_string()),
+    };
 
     let id = uuid::Uuid::now_v7().to_string();
     sqlx::query(
@@ -212,21 +254,21 @@ pub async fn enqueue(
     .bind(chrono::Utc::now().to_rfc3339())
     .bind(&new.client_hint)
     .bind(&new.connection_id)
-    .bind(connection_name)
-    .bind(group_name)
-    .bind(environment_name)
-    .bind(env_color)
+    .bind(&shown.connection_name)
+    .bind(&shown.group_name)
+    .bind(&shown.environment_name)
+    .bind(&shown.env_color)
     .bind(&new.tool)
     .bind(match new.kind {
         ToolKind::Read => "read",
         ToolKind::Write => "write",
     })
     .bind(new.arguments.to_string())
-    .bind(new.target_preview.as_ref().map(|v| v.to_string()))
+    .bind(&shown.target_preview_json)
     .execute(pool)
     .await
     .map_err(RanchError::database)?;
-    Ok(id)
+    Ok((id, shown))
 }
 
 /// Pending requests, oldest first, the order the GUI shows them in.
@@ -294,23 +336,47 @@ pub async fn decide(
         ApprovalDecision::Deny => "denied",
     };
     let reason = reason.map(str::trim).filter(|r| !r.is_empty());
-    let mut tx = pool.begin().await.map_err(RanchError::database)?;
+    // Read then write: take the write lock up front, so a concurrent
+    // writer makes this wait out the busy timeout instead of failing.
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(RanchError::database)?;
     // An approval carries the app's seal over what the human was shown:
     // ranch-mcp runs nothing on a status alone, which any process of the
     // user could write (`application::ports::sealer`).
     let decision_seal = match decision {
         ApprovalDecision::Deny => None,
         ApprovalDecision::Approve => {
-            let row: Option<(String, String, String)> = sqlx::query_as(
-                "SELECT connection_id, tool, arguments_json FROM mcp_pending_approvals
+            type Row = (
+                String,
+                String,
+                String,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+            );
+            let row: Option<Row> = sqlx::query_as(
+                "SELECT connection_id, tool, arguments_json, connection_name, group_name,
+                        environment_name, env_color, target_preview_json
+                   FROM mcp_pending_approvals
                   WHERE id = ? AND status = 'pending'",
             )
             .bind(id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(RanchError::database)?;
-            row.and_then(|(connection_id, tool, arguments)| {
-                sealer.seal(&approval_parts(id, &connection_id, &tool, &arguments))
+            row.and_then(|r| {
+                let shown = ShownTarget {
+                    connection_name: r.3,
+                    group_name: r.4,
+                    environment_name: r.5,
+                    env_color: r.6,
+                    target_preview_json: r.7,
+                };
+                sealer.seal(&approval_parts(id, &r.0, &r.1, &r.2, shown.parts()))
             })
         }
     };
@@ -362,12 +428,16 @@ async fn read_status(
 }
 
 /// `ranch-mcp`: whether the app sealed the approval of `id` over exactly
-/// the call `new` describes (always true where seals are not checked).
+/// the call `new` describes, shown as `shown` (always true where seals are
+/// not checked). A request written by an earlier release, whose seal did
+/// not cover how it was shown, no longer verifies: it is refused, and the
+/// agent asks again.
 pub async fn sealed_by_the_app(
     pool: &SqlitePool,
     sealer: &dyn Sealer,
     id: &str,
     new: &NewApproval,
+    shown: &ShownTarget,
 ) -> Result<bool, RanchError> {
     let seal: Option<(Option<String>,)> =
         sqlx::query_as("SELECT decision_seal FROM mcp_pending_approvals WHERE id = ?")
@@ -377,7 +447,7 @@ pub async fn sealed_by_the_app(
             .map_err(RanchError::database)?;
     let seal = seal.and_then(|(s,)| s);
     let arguments = new.arguments.to_string();
-    let parts = approval_parts(id, &new.connection_id, &new.tool, &arguments);
+    let parts = approval_parts(id, &new.connection_id, &new.tool, &arguments, shown.parts());
     Ok(sealer.check(&parts, seal.as_deref()) == Check::Valid)
 }
 

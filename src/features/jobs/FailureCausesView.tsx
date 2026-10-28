@@ -24,6 +24,18 @@ import { firstLine } from "./jobColumns"
 const JOBS_PER_CAUSE = 50
 
 /**
+ * A cause narrowed to the jobs of one queue. Causes are read by queue name,
+ * and two prefixes of a connection can hold a queue of the same name
+ * (`bull:emails`, `app:emails`): only this queue's jobs are counted, listed
+ * and acted on. `null` when none of the cause's jobs are in it.
+ */
+export function causeInQueue(cause: FailureCause, queueId: QueueId): FailureCause | null {
+  const jobs = cause.jobs.filter((j) => j.queueId === queueId)
+  if (jobs.length === 0) return null
+  return jobs.length === cause.jobs.length ? cause : { ...cause, jobs, count: jobs.length }
+}
+
+/**
  * The Failed tab grouped by what went wrong: one
  * folding group per cause (the failure reason with its values normalised,
  * `bullmq_schema::failed::failure_signature`), most frequent first. The
@@ -51,7 +63,8 @@ export function FailureCausesView({
   // agents' notes on these causes.
   const notes = useCauseNotes({ connectionId })
   const data = query.data
-  const causes = data?.causes ?? []
+  const causes = (data?.causes ?? []).flatMap((c) => causeInQueue(c, queueId) ?? [])
+  const scanned = causes.reduce((n, c) => n + c.count, 0)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3" data-testid="failure-causes">
@@ -59,7 +72,7 @@ export function FailureCausesView({
         {toggle}
         <span className="text-sm text-(--text2)" data-testid="failure-causes-summary">
           {data
-            ? `${causes.length.toLocaleString()} ${causes.length === 1 ? "cause" : "causes"} · ${data.scanned.toLocaleString()} failed ${data.scanned === 1 ? "job" : "jobs"}`
+            ? `${causes.length.toLocaleString()} ${causes.length === 1 ? "cause" : "causes"} · ${scanned.toLocaleString()} failed ${scanned === 1 ? "job" : "jobs"}`
             : "Counting"}
         </span>
         {data?.scanCapped ? (
@@ -84,7 +97,7 @@ export function FailureCausesView({
             <CauseGroup
               key={cause.signature}
               cause={cause}
-              note={noteForCause(notes, cause, queueName)}
+              note={noteForCause(notes, cause, queueId)}
               now={now}
               open={open === cause.signature}
               onToggle={() => setOpen((o) => (o === cause.signature ? null : cause.signature))}
@@ -169,7 +182,7 @@ function CauseGroup({
         <div className="flex shrink-0 items-center gap-1">
           {connection ? (
             <AskAiMenu
-              target={{ kind: "cause", connection, cause, queueName: queueName }}
+              target={{ kind: "cause", connection, cause }}
               testId="failure-cause-ask-ai"
             />
           ) : null}
@@ -209,6 +222,7 @@ function CauseGroup({
         <div id={panelId}>
           <CauseJobs
             connectionId={connectionId}
+            queueId={queueId}
             queueName={queueName}
             cause={cause}
             now={now}
@@ -254,12 +268,14 @@ function Trend({ values }: { values: number[] }) {
 
 function CauseJobs({
   connectionId,
+  queueId,
   queueName,
   cause,
   now,
   onOpenJob,
 }: {
   connectionId: string
+  queueId: QueueId
   queueName: string
   cause: FailureCause
   now: number
@@ -271,10 +287,12 @@ function CauseJobs({
   }
   const page = query.data
   if (!page) return null
+  // Read by queue name: a same-named queue under another prefix is left out.
+  const jobs = page.jobs.filter((job) => job.jobRef.queueId === queueId)
   return (
     <div className="pb-2" data-testid="failure-cause-jobs">
       <ul>
-        {page.jobs.map((job) => (
+        {jobs.map((job) => (
           <li key={job.jobRef.id}>
             <button
               type="button"
@@ -294,9 +312,9 @@ function CauseJobs({
           </li>
         ))}
       </ul>
-      {page.total > page.jobs.length ? (
+      {cause.count > jobs.length ? (
         <p className="px-12 pt-1 text-xs text-(--text2)">
-          {page.jobs.length.toLocaleString()} of {page.total.toLocaleString()} shown, newest first.
+          {jobs.length.toLocaleString()} of {cause.count.toLocaleString()} shown, newest first.
         </p>
       ) : null}
     </div>

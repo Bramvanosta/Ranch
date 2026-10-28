@@ -350,11 +350,14 @@ async fn change_environment_color_recolors_in_place_and_locks_on_production() {
     .await
     .unwrap();
 
-    let newly_locked =
+    // Every connection of the environment is handed back: its actor keeps
+    // the color it was spawned with.
+    let stale =
         change_environment_color_inner(&conn.environment_id, "env-staging", &repo(db.pool()))
             .await
             .unwrap();
-    assert!(newly_locked.is_empty());
+    assert_eq!(stale, vec![conn.id.clone()]);
+    assert!(!is_locked(&db, &conn.id).await);
     let row = &list_connections_inner(&repo(db.pool())).await.unwrap()[0];
     assert_eq!(row.env_color, "env-staging");
     assert_eq!(
@@ -363,19 +366,12 @@ async fn change_environment_color_recolors_in_place_and_locks_on_production() {
     );
     assert_eq!(row.env_label, "Live", "the name does not follow the color");
 
-    let newly_locked =
+    let stale =
         change_environment_color_inner(&conn.environment_id, "env-production", &repo(db.pool()))
             .await
             .unwrap();
-    assert_eq!(newly_locked, vec![conn.id.clone()]);
+    assert_eq!(stale, vec![conn.id.clone()]);
     assert!(is_locked(&db, &conn.id).await);
-
-    // Already locked → nothing new to refresh.
-    let again =
-        change_environment_color_inner(&conn.environment_id, "env-production", &repo(db.pool()))
-            .await
-            .unwrap();
-    assert!(again.is_empty());
 
     match change_environment_color_inner("nope", "env-local", &repo(db.pool())).await {
         Err(RanchError::EnvironmentNotFound { .. }) => {}
@@ -400,17 +396,15 @@ fn palette_default_names() {
 // ── Environments as entities + moving connections ───────────────
 
 use ranch_lib::commands::connections::list_environments_inner;
-use ranch_lib::commands::hierarchy::{
-    create_environment_inner, delete_environment_inner, move_connection_inner,
-};
+use ranch_lib::commands::hierarchy::{create_environment_inner, move_connection_inner};
 
 #[tokio::test]
-async fn create_and_delete_empty_environment() {
+async fn create_environment_trims_and_rejects_duplicates() {
     let dir = tempdir().unwrap();
     let db = Db::init(dir.path()).await.unwrap();
     let group = create_group_inner("Lumen", &repo(db.pool())).await.unwrap();
 
-    let env_id = create_environment_inner(&group.id, "  Staging ", "env-staging", &repo(db.pool()))
+    create_environment_inner(&group.id, "  Staging ", "env-staging", &repo(db.pool()))
         .await
         .unwrap();
     let envs = list_environments_inner(&repo(db.pool())).await.unwrap();
@@ -427,49 +421,6 @@ async fn create_and_delete_empty_environment() {
         Err(RanchError::GroupNotFound { .. }) => {}
         other => panic!("expected GroupNotFound, got {other:?}"),
     }
-
-    delete_environment_inner(&env_id, &repo(db.pool()))
-        .await
-        .unwrap();
-    assert!(list_environments_inner(&repo(db.pool()))
-        .await
-        .unwrap()
-        .is_empty());
-    match delete_environment_inner(&env_id, &repo(db.pool())).await {
-        Err(RanchError::EnvironmentNotFound { .. }) => {}
-        other => panic!("expected EnvironmentNotFound, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn delete_environment_refuses_when_it_holds_connections() {
-    let dir = tempdir().unwrap();
-    let db = Db::init(dir.path()).await.unwrap();
-    let kc = keychain();
-    let conn = add_connection_inner(
-        add_args(
-            "redis",
-            GroupSelector::named("Acme"),
-            EnvironmentSelector::named("Local", "env-local"),
-        ),
-        &repo(db.pool()),
-        &kc,
-        &ranch_lib::adapters::bullmq_redis::specs(),
-    )
-    .await
-    .unwrap();
-
-    match delete_environment_inner(&conn.environment_id, &repo(db.pool())).await {
-        Err(RanchError::InvalidInput { reason }) => assert!(reason.contains("still contains 1")),
-        other => panic!("expected InvalidInput, got {other:?}"),
-    }
-    assert_eq!(
-        list_connections_inner(&repo(db.pool()))
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
 }
 
 #[tokio::test]

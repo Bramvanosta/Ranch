@@ -205,24 +205,18 @@ routes! {
         let a: hierarchy::ReorderGroupsArgs = args(&body)?;
         reply(hierarchy::reorder_groups_inner(&a.ordered_ids, repository).await)
     },
-    "reorder_environments" => {
-        let a: hierarchy::ReorderEnvironmentsArgs = args(&body)?;
-        reply(
-            hierarchy::reorder_environments_inner(&a.group_id, &a.ordered_ids, repository)
-                .await,
-        )
-    },
     "change_environment_color" => {
         let a: hierarchy::ChangeEnvironmentColorArgs = args(&body)?;
-        let newly_locked = hierarchy::change_environment_color_inner(
+        let recolored = hierarchy::change_environment_color_inner(
             &a.environment_id,
             &a.color_token,
             repository,
         )
         .await;
-        match newly_locked {
+        match recolored {
             Ok(ids) => {
-                // The actor caches its lock state at spawn: respawn so the lock applies now.
+                // The actor keeps the color and lock it was spawned with:
+                // respawn the environment's connections so both apply now.
                 for id in ids {
                     registry.shutdown(&id).await;
                 }
@@ -243,19 +237,15 @@ routes! {
             .await,
         )
     },
-    "delete_environment" => {
-        let id: String = field(&body, "environmentId")?;
-        reply(hierarchy::delete_environment_inner(&id, repository).await)
-    },
     "move_connection" => {
         let a: hierarchy::MoveConnectionArgs = args(&body)?;
         let result =
             hierarchy::move_connection_inner(&a.connection_id, &a.environment_id, repository)
                 .await;
-        if let Ok(moved) = &result {
-            if moved.newly_locked {
-                registry.shutdown(&a.connection_id).await;
-            }
+        // The actor keeps the color (for the audit log) and the lock it was
+        // spawned with: respawn it in its new environment.
+        if result.is_ok() {
+            registry.shutdown(&a.connection_id).await;
         }
         reply(result)
     },
@@ -268,6 +258,13 @@ routes! {
     "set_kv_setting" => {
         let key: String = field(&body, "key")?;
         let value: String = field(&body, "value")?;
+        // Signed-out sessions are the server's to keep: no page brings one back.
+        if key == super::REVOKED_SESSIONS_KEY {
+            return Err(RanchError::InvalidInput {
+                reason: format!("\"{key}\" is not a setting the UI writes"),
+            }
+            .into());
+        }
         reply(settings::set_kv_setting_inner(settings_store, &key, &value).await)
     },
 

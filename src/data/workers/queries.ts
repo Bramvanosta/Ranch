@@ -25,7 +25,7 @@ export interface UseWorkersArgs {
 }
 
 export function useWorkers(args: UseWorkersArgs) {
-  // Follows Settings → Refresh, never faster than 5 s.
+  // Follows Settings › Refresh, never faster than 5 s.
   const interval = useRefetchInterval(WORKERS_REFRESH_MS)
   const queryKey = workerKeys.list(args.connectionId, args.queueId)
   const query = useQuery({

@@ -314,7 +314,7 @@ async fn remove_nonexistent_returns_job_not_found_and_no_audit() {
 
 #[tokio::test]
 #[ignore = "needs Redis: RANCH_LOCAL_REDIS=1 (CI runs it)"]
-async fn retry_on_locked_returns_connection_locked_and_no_audit() {
+async fn retry_on_locked_returns_connection_locked_and_one_failure_row() {
     let (_d, db) = fresh_pool().await;
     let queue = "ranch-test-locked-1";
     let job_id = "locked-job-1";
@@ -341,9 +341,9 @@ async fn retry_on_locked_returns_connection_locked_and_no_audit() {
         "got {err:?}"
     );
 
-    // Lock-rejected single-action attempts do NOT write audit entries
-    // (signal-to-noise; the bulk paths write one consolidated row). Confirm:
-    assert_eq!(audit::count(db.pool(), conn_id, "retryJob").await, 0);
+    // A write refused by the lock leaves one failure row, unit or bulk, so
+    // the log shows the attempt.
+    assert_eq!(audit::count(db.pool(), conn_id, "retryJob").await, 1);
 
     // And critically: the job is still in `failed`, NOT moved to wait.
     let z: Option<f64> = redis::cmd("ZSCORE")

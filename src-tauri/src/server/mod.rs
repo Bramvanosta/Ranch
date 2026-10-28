@@ -23,8 +23,9 @@ pub mod dispatch;
 pub mod oidc;
 pub mod session;
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -63,7 +64,49 @@ struct Shell {
     session_key: Arc<SessionKey>,
     session_ttl_secs: u64,
     secrets_encrypted: bool,
+    /// Wrong Basic credentials, server-wide ([`FailedLogins`]).
+    failed_logins: Arc<Mutex<FailedLogins>>,
+    /// Sessions signed out before they expire, read once from the settings.
+    revoked: Arc<tokio::sync::OnceCell<Mutex<HashMap<String, u64>>>>,
 }
+
+/// How many wrong Basic answers the whole server takes in
+/// [`FAILED_LOGIN_WINDOW`] before it refuses Basic sign-in to everyone.
+const MAX_FAILED_LOGINS: usize = 20;
+const FAILED_LOGIN_WINDOW: Duration = Duration::from_secs(60);
+
+/// The delay on a wrong answer slows one client; this bounds them all,
+/// however many connections they open. Past the limit, Basic credentials
+/// are not even checked (right ones included) until the oldest failure
+/// ages out. An OIDC session is not affected.
+#[derive(Default)]
+struct FailedLogins(VecDeque<Instant>);
+
+impl FailedLogins {
+    fn prune(&mut self, now: Instant) {
+        while self
+            .0
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= FAILED_LOGIN_WINDOW)
+        {
+            self.0.pop_front();
+        }
+    }
+
+    fn locked(&mut self, now: Instant) -> bool {
+        self.prune(now);
+        self.0.len() >= MAX_FAILED_LOGINS
+    }
+
+    fn record(&mut self, now: Instant) {
+        self.prune(now);
+        self.0.push_back(now);
+    }
+}
+
+/// `kv_settings` key of the sessions signed out before they expire: a JSON
+/// object, session id to its expiry (Unix seconds).
+pub(crate) const REVOKED_SESSIONS_KEY: &str = "server_revoked_sessions";
 
 impl Shell {
     fn auth_mode(&self) -> &'static str {
@@ -74,13 +117,65 @@ impl Shell {
         }
     }
 
-    /// The live session carried by these headers, if any.
-    fn session(&self, headers: &HeaderMap) -> Option<Session> {
+    /// The live session carried by these headers, if any: signed here, not
+    /// expired, not signed out.
+    async fn session(&self, headers: &HeaderMap) -> Option<Session> {
         let cookies = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
         let token = session::cookie(cookies, SESSION_COOKIE)?;
-        self.session_key
+        let session = self
+            .session_key
             .open::<Session>("session", token)
-            .filter(Session::is_live)
+            .filter(Session::is_live)?;
+        let revoked = self.revoked().await;
+        let revoked = revoked.lock().unwrap_or_else(|e| e.into_inner());
+        (!revoked.contains_key(&session.id)).then_some(session)
+    }
+
+    async fn revoked(&self) -> &Mutex<HashMap<String, u64>> {
+        self.revoked
+            .get_or_init(|| async {
+                let stored = self
+                    .app
+                    .settings
+                    .get(REVOKED_SESSIONS_KEY)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|raw| serde_json::from_str(&raw).ok())
+                    .unwrap_or_default();
+                Mutex::new(stored)
+            })
+            .await
+    }
+
+    /// Sign `session` out for good: its cookie opens nothing from now on,
+    /// here and after a restart. Expired ids are dropped on the way.
+    async fn revoke(&self, session: &Session) {
+        let now = session::now();
+        let raw = {
+            let revoked = self.revoked().await;
+            let mut revoked = revoked.lock().unwrap_or_else(|e| e.into_inner());
+            revoked.retain(|_, exp| *exp > now);
+            revoked.insert(session.id.clone(), session.exp);
+            serde_json::to_string(&*revoked).unwrap_or_default()
+        };
+        if let Err(e) = self.app.settings.set(REVOKED_SESSIONS_KEY, &raw).await {
+            tracing::warn!(error = %e, "could not save the sign-out; it holds until the server restarts");
+        }
+    }
+
+    fn basic_locked(&self) -> bool {
+        self.failed_logins
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .locked(Instant::now())
+    }
+
+    fn record_failed_login(&self) {
+        self.failed_logins
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record(Instant::now());
     }
 
     fn set_cookie(&self, name: &str, value: &str, path: &str, max_age: u64) -> HeaderValue {
@@ -192,6 +287,8 @@ pub fn router(app: Arc<AppState>, config: &ServerConfig) -> Router {
         session_key: Arc::new(session_key),
         session_ttl_secs: config.session_ttl_hours * 3600,
         secrets_encrypted,
+        failed_logins: Arc::default(),
+        revoked: Arc::default(),
     };
 
     let api = Router::new()
@@ -232,6 +329,7 @@ async fn invoke(
 async fn runtime(State(shell): State<Shell>, headers: HeaderMap) -> Json<Value> {
     let user = shell
         .session(&headers)
+        .await
         .map(|s| json!({ "name": s.name, "email": s.email }));
     Json(json!({
         "runtime": "server",
@@ -267,19 +365,28 @@ async fn require_auth(State(shell): State<Shell>, request: Request, next: Next) 
     if shell.credentials.is_none() && shell.oidc.is_none() {
         return next.run(request).await; // RANCH_ALLOW_NO_AUTH=1
     }
+    if shell.oidc.is_some() && shell.session(request.headers()).await.is_some() {
+        return next.run(request).await;
+    }
     let given = request.headers().get(header::AUTHORIZATION);
+    if given.is_some() && shell.credentials.is_some() && shell.basic_locked() {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, HeaderValue::from_static("60"))],
+            "Ranch: too many wrong passwords, try again in a minute\n",
+        )
+            .into_response();
+    }
     if let Some(expected) = &shell.credentials {
         if is_authorized(given, expected) {
             return next.run(request).await;
         }
     }
-    if shell.oidc.is_some() && shell.session(request.headers()).is_some() {
-        return next.run(request).await;
-    }
 
     if given.is_some() {
         // Wrong credentials (not the browser's first, header-less request):
-        // make guessing slow.
+        // make guessing slow, and count it against the whole server.
+        shell.record_failed_login();
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
     if shell.oidc.is_none() {
@@ -417,6 +524,7 @@ async fn auth_callback(
     tracing::info!(sub = %identity.sub, email = ?identity.email, "signed in");
 
     let session = Session {
+        id: session::random_token(),
         sub: identity.sub,
         name: identity.name,
         email: identity.email,
@@ -440,7 +548,10 @@ async fn auth_callback(
     response
 }
 
-async fn auth_logout(State(shell): State<Shell>) -> Response {
+async fn auth_logout(State(shell): State<Shell>, headers: HeaderMap) -> Response {
+    if let Some(session) = shell.session(&headers).await {
+        shell.revoke(&session).await;
+    }
     let page = Html(
         "<!doctype html><meta charset=utf-8><title>Ranch</title>\
          <body style=\"font:16px system-ui;display:grid;place-items:center;height:100vh;margin:0\">\

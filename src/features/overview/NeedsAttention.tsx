@@ -34,7 +34,8 @@ export function NeedsAttention({
   // The refresh setting (10 s floor), one self-paced poller.
   const causes = useFailureCauses(connectionId, null, { floorMs: 10_000 })
   const states = useJobStates(connectionId)
-  const waiting = (q: Queue) => inLine(q.counts, states)
+  // A paused queue's jobs wait in its pause too.
+  const waiting = (q: Queue) => inLine(q.counts, states, q.isPaused)
   const paused = queues.filter((q) => q.isPaused)
   const workerless = queues.filter((q) => !q.isPaused && waiting(q) > 0 && workers?.get(q.id) === 0)
   const topCauses = (causes.data?.causes ?? []).slice(0, MAX_CAUSES)

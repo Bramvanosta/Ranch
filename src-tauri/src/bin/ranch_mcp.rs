@@ -20,6 +20,7 @@ use ranch_lib::adapters::system_clock::SystemClock;
 use ranch_lib::application::ports::SecretStore;
 use ranch_lib::application::ports::{Clock, ConnectionRepository, Sealer, SettingsStore};
 use ranch_lib::shells::mcp::{run_stdio, McpServerState};
+use sqlx::SqlitePool;
 
 const BUNDLE_IDENTIFIER: &str = "dev.ranch.app";
 
@@ -65,6 +66,31 @@ fn resolve_app_data_dir() -> Result<std::path::PathBuf, Box<dyn std::error::Erro
     }
 }
 
+/// How often a running process checks that the app has not migrated the
+/// database since it started.
+const SCHEMA_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Stop when the app migrates the database under this process (an update):
+/// this code no longer knows its tables. The client reports the server
+/// gone, and the message (on stderr, in the client's logs) says to restart
+/// it.
+fn watch_schema(pool: SqlitePool) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(SCHEMA_CHECK_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(e) = sqlite::db::check_schema(&pool).await {
+                if matches!(e, ranch_lib::domain::errors::RanchError::Migration(_)) {
+                    tracing::error!("{e}");
+                    std::process::exit(1);
+                }
+                tracing::warn!(error = %e, "could not check the database schema");
+            }
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialise minimal logging to stderr (stdout is reserved for the
@@ -82,7 +108,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&app_data_dir)?;
     tracing::info!(?app_data_dir, "ranch-mcp starting");
 
-    let db = Db::init(&app_data_dir).await?;
     // A test's throwaway database (debug builds only) was never sealed by an
     // app, and its connections keep no secret in the OS keychain: seals are
     // not checked there and the keychain is not read, as in the integration
@@ -92,6 +117,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let throwaway = std::env::var_os("RANCH_MCP_DATA_DIR").is_some();
     #[cfg(not(debug_assertions))]
     let throwaway = false;
+    // The app migrates the database; this process only opens it at the
+    // schema it was built for. Older or newer, it says what to do and stops
+    // (the client shows the message), instead of failing call by call or
+    // migrating the database under an older app.
+    let db = if throwaway {
+        Db::init(&app_data_dir).await?
+    } else {
+        Db::open_current(&app_data_dir).await.inspect_err(|e| {
+            tracing::error!("{e}");
+        })?
+    };
+    watch_schema(db.pool().clone());
     let (keychain, sealer): (Arc<dyn SecretStore>, Arc<dyn Sealer>) = if throwaway {
         (
             Arc::new(InMemoryKeychain::new()),
@@ -103,7 +140,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // process never trusts what the database says on its own
         // (`application::ports::sealer`). No key (not created yet, or no
         // keychain): every agent write is refused.
-        let key = hmac_sealer::load(keychain.as_ref()).unwrap_or_else(|e| {
+        let key = hmac_sealer::load(&OsKeychain::for_integrity_key(), keychain.as_ref())
+            .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "cannot read the integrity key: agent writes are refused");
             None
         });

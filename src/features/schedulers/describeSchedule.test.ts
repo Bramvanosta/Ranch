@@ -29,6 +29,9 @@ describe("describeCron", () => {
       main: "0 9 * * *",
       plain: "daily at 09:00 (Europe/Paris)",
     })
+    expect(describeSchedule({ pattern: "0 9 * * *", every: null, tz: null }).plain).toBe(
+      "daily at 09:00 (worker's local time)",
+    )
   })
 })
 

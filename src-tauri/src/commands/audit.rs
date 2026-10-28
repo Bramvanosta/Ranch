@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
 use crate::app_state::AppState;
@@ -229,73 +230,83 @@ async fn fetch_entries(
     let rows = q.fetch_all(pool).await.map_err(RanchError::database)?;
     let mut entries = Vec::with_capacity(rows.len());
     for row in rows {
-        let id: String = row.try_get("id").map_err(RanchError::database)?;
-        let created_at: String = row.try_get("created_at").map_err(RanchError::database)?;
-        let source_str: String = row.try_get("source").map_err(RanchError::database)?;
-        let operator_id: String = row.try_get("operator_id").map_err(RanchError::database)?;
-        let agent_client: Option<String> =
-            row.try_get("agent_client").map_err(RanchError::database)?;
-        let agent_transport: Option<String> = row
-            .try_get("agent_transport")
-            .map_err(RanchError::database)?;
-        let action_str: String = row.try_get("action").map_err(RanchError::database)?;
-        let target_payload: String = row
-            .try_get("target_payload")
-            .map_err(RanchError::database)?;
-        let outcome_str: String = row.try_get("outcome").map_err(RanchError::database)?;
-        let outcome_reason: Option<String> = row
-            .try_get("outcome_reason")
-            .map_err(RanchError::database)?;
-        let connection_id: Option<String> =
-            row.try_get("connection_id").map_err(RanchError::database)?;
-        let connection_name: Option<String> = row
-            .try_get("connection_name")
-            .map_err(RanchError::database)?;
-        let env_color: Option<String> = row.try_get("env_color").map_err(RanchError::database)?;
-        let approval_id: Option<String> =
-            row.try_get("approval_id").map_err(RanchError::database)?;
-        let group_name: Option<String> = row.try_get("group_name").map_err(RanchError::database)?;
-        let environment_name: Option<String> = row
-            .try_get("environment_name")
-            .map_err(RanchError::database)?;
-
-        let source =
-            AuditSource::try_from_str(&source_str).ok_or_else(|| RanchError::InvalidInput {
-                reason: format!("Unknown audit source in DB: {source_str:?}"),
-            })?;
-        let action =
-            AuditAction::try_from_str(&action_str).ok_or_else(|| RanchError::InvalidInput {
-                reason: format!("Unknown audit action in DB: {action_str:?}"),
-            })?;
-        let outcome =
-            AuditOutcome::try_from_str(&outcome_str).ok_or_else(|| RanchError::InvalidInput {
-                reason: format!("Unknown audit outcome in DB: {outcome_str:?}"),
-            })?;
-        let target: AuditTarget =
-            serde_json::from_str(&target_payload).map_err(|e| RanchError::InvalidInput {
-                reason: format!("Could not parse target_payload as AuditTarget: {e}"),
-            })?;
-
-        entries.push(AuditLogEntry {
-            id,
-            created_at,
-            source,
-            operator_id,
-            agent_client,
-            agent_transport,
-            action,
-            target,
-            outcome,
-            outcome_reason,
-            connection_id,
-            connection_name,
-            env_color,
-            group_name,
-            environment_name,
-            approval_id,
-        });
+        // One row that does not read (written by another version, or by
+        // hand) is left out, not the whole page with it.
+        match decode_entry(&row) {
+            Ok(entry) => entries.push(entry),
+            Err(e) => {
+                let id: Option<String> = row.try_get("id").ok();
+                tracing::warn!(error = %e, ?id, "unreadable audit log row left out");
+            }
+        }
     }
     Ok(entries)
+}
+
+fn decode_entry(row: &SqliteRow) -> Result<AuditLogEntry, RanchError> {
+    let id: String = row.try_get("id").map_err(RanchError::database)?;
+    let created_at: String = row.try_get("created_at").map_err(RanchError::database)?;
+    let source_str: String = row.try_get("source").map_err(RanchError::database)?;
+    let operator_id: String = row.try_get("operator_id").map_err(RanchError::database)?;
+    let agent_client: Option<String> = row.try_get("agent_client").map_err(RanchError::database)?;
+    let agent_transport: Option<String> = row
+        .try_get("agent_transport")
+        .map_err(RanchError::database)?;
+    let action_str: String = row.try_get("action").map_err(RanchError::database)?;
+    let target_payload: String = row
+        .try_get("target_payload")
+        .map_err(RanchError::database)?;
+    let outcome_str: String = row.try_get("outcome").map_err(RanchError::database)?;
+    let outcome_reason: Option<String> = row
+        .try_get("outcome_reason")
+        .map_err(RanchError::database)?;
+    let connection_id: Option<String> =
+        row.try_get("connection_id").map_err(RanchError::database)?;
+    let connection_name: Option<String> = row
+        .try_get("connection_name")
+        .map_err(RanchError::database)?;
+    let env_color: Option<String> = row.try_get("env_color").map_err(RanchError::database)?;
+    let approval_id: Option<String> = row.try_get("approval_id").map_err(RanchError::database)?;
+    let group_name: Option<String> = row.try_get("group_name").map_err(RanchError::database)?;
+    let environment_name: Option<String> = row
+        .try_get("environment_name")
+        .map_err(RanchError::database)?;
+
+    let source =
+        AuditSource::try_from_str(&source_str).ok_or_else(|| RanchError::InvalidInput {
+            reason: format!("Unknown audit source in DB: {source_str:?}"),
+        })?;
+    let action =
+        AuditAction::try_from_str(&action_str).ok_or_else(|| RanchError::InvalidInput {
+            reason: format!("Unknown audit action in DB: {action_str:?}"),
+        })?;
+    let outcome =
+        AuditOutcome::try_from_str(&outcome_str).ok_or_else(|| RanchError::InvalidInput {
+            reason: format!("Unknown audit outcome in DB: {outcome_str:?}"),
+        })?;
+    let target: AuditTarget =
+        serde_json::from_str(&target_payload).map_err(|e| RanchError::InvalidInput {
+            reason: format!("Could not parse target_payload as AuditTarget: {e}"),
+        })?;
+
+    Ok(AuditLogEntry {
+        id,
+        created_at,
+        source,
+        operator_id,
+        agent_client,
+        agent_transport,
+        action,
+        target,
+        outcome,
+        outcome_reason,
+        connection_id,
+        connection_name,
+        env_color,
+        group_name,
+        environment_name,
+        approval_id,
+    })
 }
 
 /// A cell a spreadsheet will not run: outcome reasons carry Redis error text

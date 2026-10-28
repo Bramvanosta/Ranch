@@ -72,6 +72,7 @@ export function QueueMaintenanceMenu({ connectionId, queueId, locked }: QueueMai
             <DropdownMenuItem
               onSelect={() => setKind("clean")}
               data-testid="queue-maintenance-clean"
+              className="text-(--state-failed-text) focus:text-(--state-failed-text)"
             >
               Clean…
             </DropdownMenuItem>

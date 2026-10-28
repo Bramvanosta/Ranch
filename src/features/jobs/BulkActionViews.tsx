@@ -16,8 +16,7 @@ export function SelectingView(props: {
   onAction: (k: BulkActionKind) => void
   onCancel: () => void
 }) {
-  // K>1 no longer disables actions; cross-queue is
-  // actionable via the frontend orchestrator.
+  // A selection across queues acts too, through the frontend orchestrator.
   const button = (label: string, kind: BulkActionKind, kbdHint: string) => (
     <Button
       type="button"

@@ -1,6 +1,7 @@
 import { TriangleAlertIcon } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useCapabilities } from "@/capabilities"
+import { displayChord } from "@/commands/chords"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -38,8 +39,7 @@ interface CronJobsViewProps {
   locked?: boolean
 }
 
-const LOCKED_HINT =
-  "This connection is read-only. Unlock it from the toolbar (⇧⌘U) to change schedulers."
+const LOCKED_HINT = `This connection is read-only. Unlock it from the toolbar (${displayChord("cmd+shift+u")}) to change schedulers.`
 
 export function CronJobsView({
   connectionId,

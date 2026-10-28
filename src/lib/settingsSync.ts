@@ -14,7 +14,7 @@ import { hasNativeWindows } from "@/lib/runtime/runtime"
  *   - `theme`: the other windows switch to it (`next-themes` is per window);
  *   - `kv`:    a `kv_settings` value changed: refresh interval, alert
  *              thresholds, page size, mutes, hints… (query keys `["kv", …]`);
- *   - `mcp`:   what agents may do (Settings › Agents › Safety).
+ *   - `mcp`:   what agents may do (Agents › Setup & safety).
  */
 export type SettingsChange = { topic: "theme"; theme: string } | { topic: "kv" } | { topic: "mcp" }
 

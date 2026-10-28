@@ -38,8 +38,8 @@
 //! When `cfg.jump_host` is `Some`, [`open`] establishes the SSH session
 //! to the jump host first, opens a `direct-tcpip` channel from the jump
 //! host to the bastion's SSH port, then runs the *second* russh client
-//! over that channel via `connect_stream`. Same credential is reused on
-//! both hops (a v1 simplification).
+//! over that channel via `connect_stream`. Both hops use the same
+//! credential.
 //!
 //! ## Forbidden in this module
 //!

@@ -1,8 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query"
 import { type ReactNode, useEffect, useMemo, useRef } from "react"
+import { useJobStates } from "@/capabilities"
 import { jobKeys } from "@/data/jobs/keys"
 import { CROSS_QUEUE_PER_QUEUE_LIMIT, useCrossQueueJobs, useJobs } from "@/data/jobs/queries"
 import { useQueues } from "@/data/queues/queries"
+import { stateLabel } from "@/domain/jobStates"
 import type { PageSize } from "@/domain/pageSize"
 import { knownCount } from "@/domain/stateCounts"
 import { useDebouncedValue } from "@/hooks/useDebouncedValue"
@@ -93,6 +95,7 @@ export function JobsPanel(props: JobsPanelProps) {
     enabled: scope === "cross",
   })
   const { data: queues } = useQueues(connectionId)
+  const jobStates = useJobStates(connectionId)
 
   const sourcedJobs = useMemo(
     () => (scope === "cross" ? (crossQuery.data?.jobs ?? []) : (queueQuery.data?.jobs ?? [])),
@@ -119,7 +122,7 @@ export function JobsPanel(props: JobsPanelProps) {
   const queueCount = queues?.length ?? 0
   const scanNote =
     scope === "queue" && queueQuery.data?.scanCapped
-      ? `Looked at the newest ${SCAN_CAP.toLocaleString()} ${activeState} jobs; older ones are not searched or sorted.`
+      ? `Looked at the newest ${SCAN_CAP.toLocaleString()} ${stateLabel(activeState, jobStates).toLowerCase()} jobs; older ones are not searched or sorted.`
       : null
 
   const crossQueueNote =

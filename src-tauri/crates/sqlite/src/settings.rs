@@ -1,11 +1,13 @@
 //! The settings, in `ranch.db`'s `kv_settings`, with the safety settings'
 //! seals beside them (`seal:<key>` rows).
 
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 
+use crate::db::begin_immediate;
 use ranch_application::ports::sealer::{setting_parts, Sealer};
 use ranch_application::ports::settings::{SafetySetting, Sealed, SettingsStore};
 use ranch_application::ports::Clock;
@@ -20,6 +22,9 @@ pub struct SqliteSettingsStore {
     pool: SqlitePool,
     sealer: Arc<dyn Sealer>,
     clock: Arc<dyn Clock>,
+    /// Safety settings this process wrote while it had no key: sealed with
+    /// the next one sealed once the key is back.
+    unsealed: Mutex<BTreeSet<&'static str>>,
 }
 
 impl SqliteSettingsStore {
@@ -28,6 +33,7 @@ impl SqliteSettingsStore {
             pool,
             sealer,
             clock,
+            unsealed: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -41,22 +47,47 @@ impl SqliteSettingsStore {
         Ok(())
     }
 
-    /// Seal a safety setting as it now stands (no-op for other keys).
-    async fn reseal(&self, key: &str) -> Result<(), RanchError> {
+    /// Seal a safety setting as it now stands (no-op for other keys), on
+    /// the connection that wrote it: the value and its seal are committed
+    /// together.
+    async fn reseal(&self, conn: &mut sqlx::SqliteConnection, key: &str) -> Result<(), RanchError> {
         let Some(setting) = SafetySetting::of_key(key) else {
             return Ok(());
         };
+        if !self.seal_setting(conn, setting).await? {
+            self.unsealed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(setting.key());
+            return Ok(());
+        }
+        let earlier = std::mem::take(&mut *self.unsealed.lock().unwrap_or_else(|e| e.into_inner()));
+        for other in earlier.into_iter().filter(|other| *other != setting.key()) {
+            if let Some(other) = SafetySetting::of_key(other) {
+                self.seal_setting(conn, other).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `false` when there is no key to seal with.
+    async fn seal_setting(
+        &self,
+        conn: &mut sqlx::SqliteConnection,
+        setting: SafetySetting,
+    ) -> Result<bool, RanchError> {
+        let key = setting.key();
         let value: Option<(String,)> =
             sqlx::query_as("SELECT value FROM kv_settings WHERE key = ?")
                 .bind(key)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *conn)
                 .await
                 .map_err(RanchError::database)?;
         let Some(sealed) = self
             .sealer
             .seal(&setting_parts(key, value.as_ref().map(|(v,)| v.as_str())))
         else {
-            return Ok(());
+            return Ok(false);
         };
         sqlx::query(
             "INSERT INTO kv_settings (key, value, updated_at) VALUES (?, ?, ?)
@@ -65,9 +96,10 @@ impl SqliteSettingsStore {
         .bind(seal_key(setting))
         .bind(sealed)
         .bind(self.clock.now().to_rfc3339())
-        .execute(&self.pool)
-        .await.map_err(RanchError::database)?;
-        Ok(())
+        .execute(&mut *conn)
+        .await
+        .map_err(RanchError::database)?;
+        Ok(true)
     }
 }
 
@@ -85,6 +117,7 @@ impl SettingsStore for SqliteSettingsStore {
     async fn set(&self, key: &str, value: &str) -> Result<(), RanchError> {
         Self::refuse_seal_keys(key)?;
         let now = self.clock.now().to_rfc3339();
+        let mut tx = begin_immediate(&self.pool).await?;
         sqlx::query(
             r#"
             INSERT INTO kv_settings (key, value, updated_at)
@@ -97,20 +130,23 @@ impl SettingsStore for SqliteSettingsStore {
         .bind(key)
         .bind(value)
         .bind(&now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(RanchError::database)?;
-        self.reseal(key).await
+        self.reseal(&mut tx, key).await?;
+        tx.commit().await.map_err(RanchError::database)
     }
 
     async fn remove(&self, key: &str) -> Result<(), RanchError> {
         Self::refuse_seal_keys(key)?;
+        let mut tx = begin_immediate(&self.pool).await?;
         sqlx::query("DELETE FROM kv_settings WHERE key = ?")
             .bind(key)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(RanchError::database)?;
-        self.reseal(key).await
+        self.reseal(&mut tx, key).await?;
+        tx.commit().await.map_err(RanchError::database)
     }
 
     async fn safety(&self, setting: SafetySetting) -> Result<Sealed, RanchError> {
@@ -134,9 +170,10 @@ impl SettingsStore for SqliteSettingsStore {
     }
 
     async fn seal_all(&self) -> Result<(), RanchError> {
+        let mut tx = begin_immediate(&self.pool).await?;
         for setting in SafetySetting::ALL {
-            self.reseal(setting.key()).await?;
+            self.reseal(&mut tx, setting.key()).await?;
         }
-        Ok(())
+        tx.commit().await.map_err(RanchError::database)
     }
 }

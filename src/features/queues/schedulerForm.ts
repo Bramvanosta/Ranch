@@ -69,7 +69,8 @@ export function schedulerFormFrom(cj: CronJob, fallbackTz: string): SchedulerFor
       jobName: cj.name,
       kind: "pattern",
       pattern: cj.pattern,
-      // No stored tz = "the worker's local time": keep it that way on edit.
+      // No stored tz: the workers read it in their local time. Left empty,
+      // saving stores UTC (the sheet says so).
       tz: cj.tz ?? "",
       data: prettyJson(cj.template),
     }

@@ -30,27 +30,23 @@ mod plugins;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod shells;
+#[cfg(feature = "desktop")]
+mod startup;
 
 #[cfg(feature = "desktop")]
 use std::sync::Arc;
 #[cfg(feature = "desktop")]
 use tauri::Manager;
 #[cfg(feature = "desktop")]
-use tracing_subscriber::EnvFilter;
+use tauri_plugin_notification::NotificationExt;
 
 /// The desktop app. The HTTP shell has its own entry point
 /// (`src/server/main.rs`, feature `server`).
 #[cfg(feature = "desktop")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Structured logging: respects RUST_LOG (e.g. `RUST_LOG=ranch=debug`).
-    // Default level is INFO. `try_init` so we don't panic if a host process
-    // (test harness, embedded scenario) already installed a subscriber.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .try_init();
+    // Structured logging, to the terminal and to `ranch.log`.
+    let log_file = startup::init_logging();
 
     // tauri-specta: build the typed command registry. The Builder both produces
     // the Tauri invoke handler AND exports `bindings.ts` for the frontend.
@@ -102,25 +98,58 @@ pub fn run() {
             })?;
             std::fs::create_dir_all(&app_data_dir)?;
 
-            let db = tauri::async_runtime::block_on(adapters::sqlite::Db::init(&app_data_dir))?;
+            // A database that does not open is shown to the user, who
+            // decides; the app does not stop without a word.
+            let db = startup::open_database(&app_data_dir, log_file.as_deref());
+            let had_seals =
+                tauri::async_runtime::block_on(adapters::sqlite::db::has_seals(db.pool()))?;
             let keychain = adapters::secrets::OsKeychain::new();
 
             // The key that seals approvals, the agent safety settings and
-            // the connections (`application::ports::sealer`). The run that
-            // creates it seals the state as it is; a later run carries over
-            // the connection seals made before they covered the endpoint,
-            // those that still hold. Without a keychain nothing is sealed,
-            // and ranch-mcp opens no connection.
-            let (key, created) = match adapters::hmac_sealer::load_or_create(&keychain) {
+            // the connections (`application::ports::sealer`), in its own
+            // keychain service. The run that creates it seals the state as
+            // it is, unless seals were already there: the key was lost, and
+            // the state cannot be vouched for, so it starts from the
+            // strictest values. A later run carries over the connection
+            // seals made before they covered the endpoint, those that still
+            // hold. A keychain that cannot be read now (locked) is asked
+            // again at the next seal; until then nothing is sealed, and
+            // ranch-mcp opens no connection.
+            let integrity = adapters::secrets::OsKeychain::for_integrity_key();
+            let (key, created) = match adapters::hmac_sealer::load_or_create(&integrity, &keychain)
+            {
                 Ok((key, created)) => (Some(key), created),
                 Err(e) => {
                     tracing::warn!(error = %e, "no integrity key: agents cannot write");
                     (None, false)
                 }
             };
-            let sealer = Arc::new(adapters::hmac_sealer::HmacSealer::for_app(key));
+            let sealer = Arc::new(match key {
+                Some(key) => adapters::hmac_sealer::HmacSealer::for_app(Some(key)),
+                None => adapters::hmac_sealer::HmacSealer::for_app_reloading(Box::new(|| {
+                    let integrity = adapters::secrets::OsKeychain::for_integrity_key();
+                    let passwords = adapters::secrets::OsKeychain::new();
+                    adapters::hmac_sealer::load(&integrity, &passwords)
+                        .ok()
+                        .flatten()
+                })),
+            });
             let state = app_state::AppState::new(db, Arc::new(keychain), sealer);
-            if created {
+            if created && had_seals {
+                tracing::warn!(
+                    "integrity key missing while seals exist: agent safety reset to its strictest"
+                );
+                tauri::async_runtime::block_on(startup::restrict_after_key_loss(&state))?;
+                if let Err(e) = app
+                    .notification()
+                    .builder()
+                    .title(startup::KEY_LOSS_TITLE)
+                    .body(startup::KEY_LOSS_BODY)
+                    .show()
+                {
+                    tracing::warn!(error = %e, "could not show the safety reset notification");
+                }
+            } else if created {
                 tauri::async_runtime::block_on(async {
                     state.settings.seal_all().await?;
                     state.repository.reseal_all().await

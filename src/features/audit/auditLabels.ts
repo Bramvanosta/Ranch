@@ -18,7 +18,7 @@ export const ACTION_LABELS: Record<AuditAction, string> = {
   cleanQueue: "Clean queue",
   retryAllFailed: "Retry all failed",
   upsertScheduler: "Save scheduler",
-  removeScheduler: "Delete scheduler",
+  removeScheduler: "Remove scheduler",
 }
 
 /** Who did it: "You", or the agent's readable name. */

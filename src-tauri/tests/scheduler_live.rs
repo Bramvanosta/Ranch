@@ -370,7 +370,9 @@ async fn editing_replaces_the_pending_job_and_keeps_the_iteration_count() {
     .expect("to pattern");
     let sched = hash(&mut s.redis, key(q, "repeat:tick")).await;
     assert_eq!(sched["pattern"], "*/5 * * * *");
-    assert!(!sched.contains_key("every") && !sched.contains_key("tz"));
+    assert!(!sched.contains_key("every"));
+    // No timezone given: stored as UTC, never left to the workers' local time.
+    assert_eq!(sched["tz"], "UTC");
 
     assert_eq!(audit_count(&s, "upsertScheduler").await, 3);
     s.registry.shutdown_all().await;

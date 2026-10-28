@@ -1,9 +1,16 @@
 //! Seals as HMAC-SHA256 tags, keyed by a secret in the OS keychain.
 //!
+//! The key has a keychain service of its own (`OsKeychain::for_integrity_key`),
+//! apart from the connections' passwords: no entry a connection names can
+//! be it. Earlier releases kept it beside the passwords
+//! ([`LEGACY_KEY_ACCOUNT`]); the app moves it on its first run.
+//!
 //! On macOS the keychain item is readable by Ranch's own binaries and asks
 //! the user for anything else; on Linux the Secret Service lets any process
 //! of the user read it, as it does the Redis passwords: there is no boundary
 //! to keep there.
+
+use std::sync::RwLock;
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -12,29 +19,58 @@ use crate::application::ports::sealer::{Check, Sealer};
 use crate::application::ports::SecretStore;
 use crate::domain::errors::RanchError;
 
-/// The keychain account of the key (service `dev.ranch.app`).
-pub const KEY_ACCOUNT: &str = "ranch::integrity";
+/// The keychain account of the key, in its own service.
+pub const KEY_ACCOUNT: &str = "integrity-key";
+
+/// Where earlier releases kept the key: the passwords' service
+/// (`dev.ranch.app`). Read when the key is not in its own service yet.
+pub const LEGACY_KEY_ACCOUNT: &str = "ranch::integrity";
 
 pub type Key = [u8; 32];
 
+/// Looks for the key again.
+pub type Reload = Box<dyn Fn() -> Option<Key> + Send + Sync>;
+
 pub struct HmacSealer {
-    key: Option<Key>,
+    key: RwLock<Option<Key>>,
     /// Whether this process checks seals. Only `ranch-mcp` does: it is the
     /// one that must not take the database's word.
     checks: bool,
+    /// The app, when the keychain could not give the key at launch (locked,
+    /// say): asked again at each seal, so what the user saves once it opens
+    /// is sealed.
+    reload: Option<Reload>,
 }
 
 impl HmacSealer {
     /// The app: seal with `key` (none when the keychain could not give
     /// it), check nothing.
     pub fn for_app(key: Option<Key>) -> Self {
-        Self { key, checks: false }
+        Self {
+            key: RwLock::new(key),
+            checks: false,
+            reload: None,
+        }
+    }
+
+    /// The app without its key yet: `reload` is asked for it at each seal
+    /// until it gives one.
+    pub fn for_app_reloading(reload: Reload) -> Self {
+        Self {
+            key: RwLock::new(None),
+            checks: false,
+            reload: Some(reload),
+        }
     }
 
     /// `ranch-mcp`: seal with `key` and check every seal. Without a key,
     /// every check is `Unverifiable`.
     pub fn for_agents(key: Option<Key>) -> Self {
-        Self { key, checks: true }
+        Self {
+            key: RwLock::new(key),
+            checks: true,
+            reload: None,
+        }
     }
 
     /// Seal nothing, check nothing: a process with no key and nothing to
@@ -42,24 +78,34 @@ impl HmacSealer {
     pub fn unsealed() -> Self {
         Self::for_app(None)
     }
+
+    fn key(&self) -> Option<Key> {
+        let known = *self.key.read().unwrap_or_else(|e| e.into_inner());
+        if known.is_some() {
+            return known;
+        }
+        let found = self.reload.as_ref().and_then(|reload| reload())?;
+        tracing::info!("integrity key read from the keychain: seals resume");
+        *self.key.write().unwrap_or_else(|e| e.into_inner()) = Some(found);
+        Some(found)
+    }
 }
 
 impl Sealer for HmacSealer {
     fn seal(&self, parts: &[&str]) -> Option<String> {
-        self.key
-            .as_ref()
-            .map(|k| hex(&mac(k, parts).finalize().into_bytes()))
+        self.key()
+            .map(|k| hex(&mac(&k, parts).finalize().into_bytes()))
     }
 
     fn check(&self, parts: &[&str], seal: Option<&str>) -> Check {
         if !self.checks {
             return Check::Valid;
         }
-        let Some(k) = self.key.as_ref() else {
+        let Some(k) = self.key() else {
             return Check::Unverifiable;
         };
         match seal.and_then(unhex) {
-            Some(bytes) if mac(k, parts).verify_slice(&bytes).is_ok() => Check::Valid,
+            Some(bytes) if mac(&k, parts).verify_slice(&bytes).is_ok() => Check::Valid,
             _ => Check::Invalid,
         }
     }
@@ -89,31 +135,68 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// The key, created (and stored) when the keychain has none. `true` when it
-/// was just created.
-pub fn load_or_create(keychain: &dyn SecretStore) -> Result<(Key, bool), RanchError> {
-    if let Some(key) = load(keychain)? {
+/// The app's key: read from its own service (`store`), else moved there
+/// from where earlier releases kept it (`legacy`, the passwords' service),
+/// else created there. `true` when it was just created.
+pub fn load_or_create(
+    store: &dyn SecretStore,
+    legacy: &dyn SecretStore,
+) -> Result<(Key, bool), RanchError> {
+    if let Some(key) = read(store, KEY_ACCOUNT)? {
+        return Ok((key, false));
+    }
+    if let Some(key) = read(legacy, LEGACY_KEY_ACCOUNT)? {
+        move_out_of_legacy(store, legacy, &key);
         return Ok((key, false));
     }
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|e| RanchError::InvalidInput {
         reason: format!("no randomness for the integrity key: {e}"),
     })?;
-    keychain.set(KEY_ACCOUNT, &hex(&key))?;
+    store.set(KEY_ACCOUNT, &hex(&key))?;
     Ok((key, true))
 }
 
-/// The key, if the keychain holds one.
-pub fn load(keychain: &dyn SecretStore) -> Result<Option<Key>, RanchError> {
-    Ok(keychain
-        .get(KEY_ACCOUNT)?
+/// The key, if the keychain holds one: in its own service, or where
+/// earlier releases kept it (`ranch-mcp` started before the app moved it).
+pub fn load(store: &dyn SecretStore, legacy: &dyn SecretStore) -> Result<Option<Key>, RanchError> {
+    match read(store, KEY_ACCOUNT)? {
+        Some(key) => Ok(Some(key)),
+        None => read(legacy, LEGACY_KEY_ACCOUNT),
+    }
+}
+
+fn read(store: &dyn SecretStore, account: &str) -> Result<Option<Key>, RanchError> {
+    Ok(store
+        .get(account)?
         .and_then(|text| unhex(&text))
         .and_then(|bytes| Key::try_from(bytes).ok()))
+}
+
+/// Copy the key to its own service, then forget the old entry. A failure
+/// leaves it where it was, in use: the next run tries again.
+fn move_out_of_legacy(store: &dyn SecretStore, legacy: &dyn SecretStore, key: &Key) {
+    if let Err(e) = store.set(KEY_ACCOUNT, &hex(key)) {
+        tracing::warn!(error = %e, "could not move the integrity key to its own keychain service");
+        return;
+    }
+    match read(store, KEY_ACCOUNT) {
+        Ok(Some(copy)) if copy == *key => {}
+        _ => {
+            tracing::warn!("the integrity key's copy does not read back; the old entry is kept");
+            return;
+        }
+    }
+    match legacy.delete(LEGACY_KEY_ACCOUNT) {
+        Ok(()) => tracing::info!("integrity key moved to its own keychain service"),
+        Err(e) => tracing::warn!(error = %e, "could not delete the integrity key's old entry"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::secrets::InMemoryKeychain;
     use crate::application::ports::sealer::{connection_parts, setting_parts};
 
     #[test]
@@ -153,12 +236,48 @@ mod tests {
 
     #[test]
     fn the_key_is_created_once_and_read_back() {
-        let kc = crate::adapters::secrets::InMemoryKeychain::new();
-        assert_eq!(load(&kc).unwrap(), None);
-        let (key, created) = load_or_create(&kc).unwrap();
+        let store = InMemoryKeychain::new();
+        let passwords = InMemoryKeychain::new();
+        assert_eq!(load(&store, &passwords).unwrap(), None);
+        let (key, created) = load_or_create(&store, &passwords).unwrap();
         assert!(created);
-        let (again, created) = load_or_create(&kc).unwrap();
+        let (again, created) = load_or_create(&store, &passwords).unwrap();
         assert!(!created);
         assert_eq!(key, again);
+        assert_eq!(passwords.get(LEGACY_KEY_ACCOUNT).unwrap(), None);
+    }
+
+    #[test]
+    fn an_earlier_releases_key_moves_to_its_own_service() {
+        let store = InMemoryKeychain::new();
+        let passwords = InMemoryKeychain::new();
+        let key = [9u8; 32];
+        passwords.set(LEGACY_KEY_ACCOUNT, &hex(&key)).unwrap();
+
+        // ranch-mcp reads it where it is, and moves nothing.
+        assert_eq!(load(&store, &passwords).unwrap(), Some(key));
+        assert!(passwords.get(LEGACY_KEY_ACCOUNT).unwrap().is_some());
+
+        // The app keeps it (no new key: the seals hold) and moves it.
+        let (moved, created) = load_or_create(&store, &passwords).unwrap();
+        assert!(!created);
+        assert_eq!(moved, key);
+        assert_eq!(passwords.get(LEGACY_KEY_ACCOUNT).unwrap(), None);
+        assert_eq!(load(&store, &passwords).unwrap(), Some(key));
+    }
+
+    #[test]
+    fn a_reloading_sealer_seals_once_the_key_is_there() {
+        let store = std::sync::Arc::new(InMemoryKeychain::new());
+        let reader = std::sync::Arc::clone(&store);
+        let sealer = HmacSealer::for_app_reloading(Box::new(move || {
+            read(reader.as_ref(), KEY_ACCOUNT).ok().flatten()
+        }));
+        assert_eq!(sealer.seal(&["a"]), None);
+        store.set(KEY_ACCOUNT, &hex(&[3u8; 32])).unwrap();
+        assert_eq!(
+            sealer.seal(&["a"]),
+            HmacSealer::for_app(Some([3u8; 32])).seal(&["a"])
+        );
     }
 }

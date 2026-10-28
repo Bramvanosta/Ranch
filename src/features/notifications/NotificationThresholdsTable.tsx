@@ -1,5 +1,5 @@
 /**
- * Settings → Notifications thresholds editor.
+ * Settings › Alerts thresholds editor.
  *
  * Inline table for adding / removing notification thresholds. Saves
  * each row immediately via `useThresholdsState`'s persist helper.

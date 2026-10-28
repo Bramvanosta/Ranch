@@ -6,7 +6,8 @@
 //! is open to agent writes. The app therefore seals, with a key only it and
 //! `ranch-mcp` hold:
 //!
-//!   - each approval it grants (`mcp_pending_approvals.decision_seal`);
+//!   - each approval it grants, over the call and how it was shown
+//!     (`mcp_pending_approvals.decision_seal`);
 //!   - the safety settings ([`SafetySetting`](super::settings::SafetySetting),
 //!     a `seal:<key>` row each, written by the settings store alone);
 //!   - each connection's agent read-only flag and lock, and where it
@@ -83,12 +84,37 @@ pub fn legacy_connection_parts(id: &str, mcp_readonly: Option<i64>, is_locked: i
     ["connection", id, flag(mcp_readonly), flag(Some(is_locked))]
 }
 
-/// An approval: what the human saw and agreed to.
+/// What the approval sheet shows of a request's target: the connection as
+/// it was displayed when the request was written, and the preview.
+#[derive(Debug, Clone, Copy)]
+pub struct ApprovalShown<'a> {
+    pub connection_name: &'a str,
+    pub group_name: &'a str,
+    pub environment_name: &'a str,
+    pub env_color: &'a str,
+    pub target_preview_json: Option<&'a str>,
+}
+
+/// An approval: what the human saw and agreed to. The call itself, and how
+/// it was shown: a request whose sheet was rewritten shows one thing and
+/// runs nothing.
 pub fn approval_parts<'a>(
     id: &'a str,
     connection_id: &'a str,
     tool: &'a str,
     arguments_json: &'a str,
-) -> [&'a str; 5] {
-    ["approval", id, connection_id, tool, arguments_json]
+    shown: ApprovalShown<'a>,
+) -> [&'a str; 10] {
+    [
+        "approval",
+        id,
+        connection_id,
+        tool,
+        arguments_json,
+        shown.connection_name,
+        shown.group_name,
+        shown.environment_name,
+        shown.env_color,
+        shown.target_preview_json.unwrap_or("\u{0}absent"),
+    ]
 }

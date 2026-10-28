@@ -308,8 +308,8 @@ async fn a_newer_query_supersedes_the_one_still_scanning() {
 }
 
 /// A job exactly as BullMQ's `storeJob.lua` leaves it: no `atm` until an
-/// attempt ends. The decoder used to require that field, so the waiting /
-/// delayed / active lists of a real queue came back empty next to non-zero
+/// attempt ends. A decoder that required that field would list the waiting
+/// / delayed / active jobs of a real queue as empty, next to non-zero
 /// counters.
 #[tokio::test]
 #[ignore = "needs Redis: RANCH_LOCAL_REDIS=1 (CI runs it)"]

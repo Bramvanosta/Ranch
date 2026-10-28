@@ -33,12 +33,19 @@ pub(crate) async fn handle_add_job(
     caller: &Caller,
     token: &CancellationToken,
 ) -> Result<AddJobResult, RanchError> {
-    authorize_write(state, caller, "add_job").await?;
+    let q = &QueueRef::parse(queue_id.as_str())?;
+    authorize_write(
+        state,
+        caller,
+        "add_job",
+        AuditAction::AddJob,
+        AuditTarget::queue(&q.id(), &q.name),
+    )
+    .await?;
 
     let job = PreparedJob::try_from(job).map_err(|reason| RanchError::InvalidInput { reason })?;
 
     let mut conn = open_redis_for_actor(state, token).await?;
-    let q = &QueueRef::parse(queue_id.as_str())?;
 
     // Before the schema: on a cold cache a missing queue would otherwise
     // read as "schema not recognized". `:meta` is the same key in every

@@ -1,9 +1,8 @@
 //! MCP installer Tauri commands.
 //!
 //! Three commands:
-//!   - `install_mcp_for_claude_desktop`
-//!   - `install_mcp_for_cursor`
 //!   - `get_mcp_installer_status`
+//!   - `install_mcp_for_client`
 //!   - `get_mcp_manual_snippet`
 //!
 //! These are intentionally UI-only (not exposed via MCP): an agent
@@ -48,8 +47,7 @@ pub async fn get_mcp_installer_status() -> Result<McpInstallerOverview, RanchErr
     })
 }
 
-/// One install command for every client (the two per-client
-/// commands above predate it and stay for compatibility).
+/// Installs Ranch's MCP server in one client's config.
 #[cfg(feature = "desktop")]
 #[tauri::command]
 #[specta::specta]
@@ -67,28 +65,6 @@ pub async fn install_mcp_for_client(
         })?
         .map(Into::into)
         .map_err(Into::into)
-}
-
-#[cfg(feature = "desktop")]
-#[tauri::command]
-#[specta::specta]
-pub async fn install_mcp_for_claude_desktop() -> Result<McpInstallerStatus, RanchErrorDto> {
-    install_mcp_for_claude_desktop_inner().map_err(Into::into)
-}
-
-pub fn install_mcp_for_claude_desktop_inner() -> Result<McpInstallerStatus, RanchError> {
-    mcp_installer::install_for(mcp_installer::McpClient::ClaudeDesktop).map(Into::into)
-}
-
-#[cfg(feature = "desktop")]
-#[tauri::command]
-#[specta::specta]
-pub async fn install_mcp_for_cursor() -> Result<McpInstallerStatus, RanchErrorDto> {
-    install_mcp_for_cursor_inner().map_err(Into::into)
-}
-
-pub fn install_mcp_for_cursor_inner() -> Result<McpInstallerStatus, RanchError> {
-    mcp_installer::install_for(mcp_installer::McpClient::Cursor).map(Into::into)
 }
 
 #[cfg(feature = "desktop")]

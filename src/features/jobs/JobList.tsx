@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
+import { useJobStates } from "@/capabilities"
 import { DataTable } from "@/components/data/DataTable"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useJobs } from "@/data/jobs/queries"
+import { stateLabel } from "@/domain/jobStates"
 import { DEFAULT_PAGE_SIZE, PAGE_SIZES, type PageSize } from "@/domain/pageSize"
 import { StaleNotice } from "@/features/freshness"
 import { useKeyboardShortcut } from "@/hooks/useKeyboardShortcut"
@@ -92,6 +94,7 @@ export function JobList({
   onOpenJob,
 }: JobListProps) {
   const externallySourced = externalJobs !== undefined
+  const jobStates = useJobStates(connectionId)
 
   // Self-managed path: always call useJobs (hooks rule), then ignore the
   // result when the parent provided `jobs` explicitly. The query stays
@@ -166,10 +169,12 @@ export function JobList({
   }
 
   if (jobs.length === 0) {
+    // The state as its tab names it ("waiting children"), not its code.
+    const label = stateLabel(state, jobStates).toLowerCase()
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 rounded-md border border-dashed border-(--line) bg-(--surf)/20 p-8 text-center">
         <p className="text-sm font-medium">
-          {filtered ? `No ${state} jobs match the filter.` : `No ${state} jobs in this queue.`}
+          {filtered ? `No ${label} jobs match the filter.` : `No ${label} jobs in this queue.`}
         </p>
         <p className="text-xs text-(--text2)">
           {filtered

@@ -1,3 +1,5 @@
+import type { Need } from "@/capabilities"
+
 /**
  * The command registry: every user
  * action that has a place in the menu bar, the palette or a global shortcut.
@@ -6,7 +8,9 @@
  * does, and whether it applies right now, comes from whoever can do it: the
  * component or route that owns the action registers a handler with
  * `useCommandHandler` (see `handlers.ts`). No handler, or a disabled one, means
- * the menu item is greyed out and the chord does nothing.
+ * the menu item is greyed out and the chord does nothing. A command whose
+ * capability the connection on screen does not declare (`needs`) is left
+ * out of the menus.
  */
 
 export type MenuName =
@@ -47,6 +51,8 @@ export interface CommandDef {
   section?: number
   /** Agents menu: only when AI features are on. */
   agents?: boolean
+  /** What the connection's backend must declare for the command to be offered. */
+  needs?: Need
 }
 
 export const COMMANDS: CommandDef[] = [
@@ -109,17 +115,30 @@ export const COMMANDS: CommandDef[] = [
   { id: "connection.copyUrl", label: "Copy Redis URL", menu: "Connection", section: 2 },
   { id: "connection.remove", label: "Remove Connection…", menu: "Connection", section: 3 },
 
-  { id: "queue.pause", label: "Pause Queue", menu: "Queue", shortcut: "cmd+shift+p" },
-  { id: "queue.addJob", label: "Add Job…", menu: "Queue", shortcut: "cmd+j" },
+  {
+    id: "queue.pause",
+    label: "Pause Queue",
+    menu: "Queue",
+    shortcut: "cmd+shift+p",
+    needs: "queueControl",
+  },
+  {
+    id: "queue.addJob",
+    label: "Add Job…",
+    menu: "Queue",
+    shortcut: "cmd+j",
+    needs: "jobActions.add",
+  },
   {
     id: "queue.retryAllFailed",
     label: "Retry All Failed…",
     menu: "Queue",
     shortcut: "alt+cmd+r",
     section: 1,
+    needs: "maintenance.retryAllFailed",
   },
-  { id: "queue.clean", label: "Clean…", menu: "Queue", section: 1 },
-  { id: "queue.drain", label: "Drain…", menu: "Queue", section: 1 },
+  { id: "queue.clean", label: "Clean…", menu: "Queue", section: 1, needs: "maintenance.clean" },
+  { id: "queue.drain", label: "Drain…", menu: "Queue", section: 1, needs: "maintenance.drain" },
   {
     id: "queue.copyKey",
     label: "Copy Queue ID",
@@ -129,8 +148,20 @@ export const COMMANDS: CommandDef[] = [
   },
   { id: "queue.openInNewTab", label: "Open in New Tab", menu: "Queue", section: 3 },
 
-  { id: "job.retry", label: "Retry", menu: "Job", shortcut: "cmd+shift+r" },
-  { id: "job.promote", label: "Promote", menu: "Job", shortcut: "alt+cmd+p" },
+  {
+    id: "job.retry",
+    label: "Retry",
+    menu: "Job",
+    shortcut: "cmd+shift+r",
+    needs: "jobActions.single",
+  },
+  {
+    id: "job.promote",
+    label: "Promote",
+    menu: "Job",
+    shortcut: "alt+cmd+p",
+    needs: "jobActions.single",
+  },
   { id: "job.remove", label: "Remove…", menu: "Job", shortcut: "cmd+backspace" },
   { id: "job.copyPayload", label: "Copy Payload", menu: "Job", shortcut: "alt+cmd+c", section: 1 },
   {

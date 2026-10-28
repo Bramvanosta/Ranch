@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 
+import { displayChord } from "@/commands/chords"
 import { Segmented } from "@/components/data/Segmented"
 import { Input } from "@/components/ui/input"
 import { useGroups } from "@/data/groups/queries"
@@ -23,7 +24,8 @@ export function AskAiSetup() {
       <div className="flex flex-col gap-1.5">
         <span className="text-sm font-medium">Default agent</span>
         <span className="text-xs text-(--text2)">
-          What Agents › Ask AI About Selection (⇧⌥⌘A) uses. Every Ask AI menu offers the others.
+          What Agents › Ask AI About Selection ({displayChord("shift+alt+cmd+a")}) uses. Every Ask
+          AI menu offers the others.
         </span>
         <Segmented
           label="Default agent"

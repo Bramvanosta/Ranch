@@ -13,8 +13,6 @@ vi.mock("@/lib/tauri/bindings", () => ({
     getKvSetting: vi.fn(),
     setKvSetting: vi.fn(),
     getMcpInstallerStatus: vi.fn(),
-    installMcpForClaudeDesktop: vi.fn(),
-    installMcpForCursor: vi.fn(),
     parseRedisUrl: vi.fn(),
     testConnection: vi.fn(),
     addConnection: vi.fn(),

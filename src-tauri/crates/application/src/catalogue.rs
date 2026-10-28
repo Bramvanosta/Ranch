@@ -211,7 +211,6 @@ pub const OPERATIONS: &[Operation] = &[
     op("remove_connection", RECORD).forbidden(KEYCHAIN),
     op("change_environment_color", RECORD).ui_only(ORGANISE),
     op("reorder_groups", RECORD).ui_only(ORGANISE),
-    op("reorder_environments", RECORD).ui_only(ORGANISE),
     op("list_groups", Read).ui_only(ORGANISE),
     op("create_group", RECORD).ui_only(ORGANISE),
     op("rename_group", RECORD).ui_only(ORGANISE),
@@ -220,7 +219,6 @@ pub const OPERATIONS: &[Operation] = &[
     op("set_group_collapsed", RECORD).ui_only(ORGANISE),
     op("set_connection_collapsed", RECORD).ui_only(ORGANISE),
     op("create_environment", RECORD).ui_only(ORGANISE),
-    op("delete_environment", RECORD).ui_only(ORGANISE),
     op("move_connection", RECORD).ui_only(ORGANISE),
     // ── settings ───────────────────────────────────────────────────────
     op("get_kv_setting", Read).ui_only(PREFERENCES),
@@ -336,12 +334,6 @@ pub const OPERATIONS: &[Operation] = &[
     op("get_mcp_installer_status", Read)
         .refused(MCP_SETUP)
         .ui_only(INSTALLERS),
-    op("install_mcp_for_claude_desktop", EXTERNAL)
-        .refused(MCP_SETUP)
-        .forbidden(INSTALLERS),
-    op("install_mcp_for_cursor", EXTERNAL)
-        .refused(MCP_SETUP)
-        .forbidden(INSTALLERS),
     op("install_mcp_for_client", EXTERNAL)
         .refused(MCP_SETUP)
         .forbidden(INSTALLERS),

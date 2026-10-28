@@ -116,8 +116,6 @@ export const agentsHandlers = {
     return n
   },
   get_mcp_installer_status: () => world.installers,
-  install_mcp_for_claude_desktop: () => install("claudeDesktop"),
-  install_mcp_for_cursor: () => install("cursor"),
   install_mcp_for_client: ({ client }) => install(String(client)),
   get_mcp_manual_snippet: () => ({
     binaryPath: "/Applications/Ranch.app/Contents/MacOS/ranch-mcp",

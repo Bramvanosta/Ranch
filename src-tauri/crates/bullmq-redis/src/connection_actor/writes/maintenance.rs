@@ -160,13 +160,26 @@ pub(crate) async fn handle_run_queue_maintenance(
     sink: &dyn ProgressSink,
     token: &CancellationToken,
 ) -> Result<MaintenanceResult, RanchError> {
-    authorize_write(state, caller, op.tool()).await?;
+    let action = match op {
+        QueueMaintenance::Drain { .. } => AuditAction::DrainQueue,
+        QueueMaintenance::Clean { .. } => AuditAction::CleanQueue,
+        QueueMaintenance::RetryAllFailed => AuditAction::RetryAllFailed,
+    };
+    let queue = QueueRef::parse(queue_id.as_str())?;
+    authorize_write(
+        state,
+        caller,
+        op.tool(),
+        action,
+        AuditTarget::queue(&queue.id(), &queue.name),
+    )
+    .await?;
 
     let total = handle_preview_queue_maintenance(state, queue_id, op, token)
         .await?
         .affected;
     let mut conn = open_redis_for_actor(state, token).await?;
-    let q = &QueueRef::parse(queue_id.as_str())?;
+    let q = &queue;
     let keys = resolve_keys_for_queue(state, &mut conn, q, token).await?;
     let prefix = format!("{}:", keys.queue_base(q));
     let batch = maintenance::BATCH;
@@ -290,10 +303,9 @@ pub(crate) async fn handle_run_queue_maintenance(
         }
     }
 
-    let (action, summary_verb) = match op {
-        QueueMaintenance::Drain { .. } => (AuditAction::DrainQueue, "removed"),
-        QueueMaintenance::Clean { .. } => (AuditAction::CleanQueue, "removed"),
-        QueueMaintenance::RetryAllFailed => (AuditAction::RetryAllFailed, "retried"),
+    let summary_verb = match op {
+        QueueMaintenance::Drain { .. } | QueueMaintenance::Clean { .. } => "removed",
+        QueueMaintenance::RetryAllFailed => "retried",
     };
     let mut reason = format!("{affected} {summary_verb}");
     if skipped > 0 {
