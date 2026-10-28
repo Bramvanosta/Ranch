@@ -4,7 +4,7 @@
   "version": "0.4.0",
   "packageManager": "pnpm@10.34.5",
   "type": "module",
-  "description": "Local-first BullMQ desktop client (Tauri v2 + React + ShadCN + Rust)",
+  "description": "Desktop client for BullMQ queues, with an MCP server for agents",
   "license": "MIT",
   "scripts": {
     "dev": "vite",

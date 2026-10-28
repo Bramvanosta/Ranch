@@ -1,3 +1,6 @@
+//! The menu bar icon: a click shows the main window, its menu opens or quits
+//! Ranch. Closing the main window hides it, so Ranch keeps running here.
+
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
@@ -5,22 +8,16 @@ use tauri::{
     Manager, Runtime,
 };
 
-// Note: dynamic tray-menu localization (template's `update_tray_menu` Tauri
-// command) is not part of the app: every Tauri command is an operation of
-// the catalogue (`application::catalogue`). When i18n-driven tray updates
-// are needed, add it there.
-
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("system-tray")
         .setup(|app, _| {
-            // Create tray menu with default English text
             let menu = Menu::with_id_and_items(
                 app,
                 "system-tray",
                 &[
-                    &MenuItem::with_id(app, "show", "Show Window", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "show", "Open Ranch", true, None::<&str>)?,
                     &PredefinedMenuItem::separator(app)?,
-                    &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "quit", "Quit Ranch", true, None::<&str>)?,
                 ],
             )?;
 
@@ -70,10 +67,14 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             Ok(())
         })
         .on_window_ready(move |window| {
+            // Only the main window hides: the others (New Window, New Tab,
+            // Settings) close for real, so none lingers out of sight.
+            if window.label() != "main" {
+                return;
+            }
             let window_clone = window.clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    // Hide window instead of exiting when close is requested
                     let _ = window_clone.hide();
                     api.prevent_close();
                 }

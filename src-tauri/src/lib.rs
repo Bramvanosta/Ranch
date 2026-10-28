@@ -154,12 +154,11 @@ pub fn run() {
 
     let context = tauri::generate_context!();
 
-    // Updater plugin only in release builds (template-shipped pattern; full
-    // signed-update flow is wired in the updater commands), and only when the
-    // build was given a real feed. `tauri.conf.json` ships placeholders that a
-    // release pipeline substitutes; the plugin refuses them while it
-    // initialises, and a release that was not given a feed (v0.2.0-rc.3, every
-    // platform) panicked before its window opened.
+    // The updater plugin loads in release builds only (the signed-update flow
+    // is in the updater commands), and only when the build was given a real
+    // feed: `tauri.conf.json` ships placeholders that the release pipeline
+    // substitutes, and the plugin panics on them while it initialises, before
+    // any window opens.
     #[cfg(not(debug_assertions))]
     let builder =
         if commands::updater::feed_is_configured(context.config().plugins.0.get("updater")) {
