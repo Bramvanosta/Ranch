@@ -114,16 +114,17 @@ fn request(env: &Env) -> GateRequest {
 }
 
 /// What ranch-mcp does before it sends anything to a connection: resolve
-/// its settings and its password. `repo` checks seals or not.
+/// its settings and its password. `repo` checks seals or not. The error
+/// that kept the connection closed, `None` when it opened.
 async fn open(
     env: &Env,
     repo: &dyn ConnectionRepository,
     id: &str,
     keychain: &Arc<dyn SecretStore>,
-) -> Result<(), RanchError> {
+) -> Option<RanchError> {
     resolve_connection_config(id, repo, keychain, write_pipeline(&env.pool))
         .await
-        .map(|_| ())
+        .err()
 }
 
 async fn writable(env: &Env) -> bool {
@@ -307,7 +308,7 @@ async fn a_connection_pointed_elsewhere_behind_the_apps_back_is_not_opened() {
     let e = env().await;
     let kc: Arc<dyn SecretStore> = Arc::new(InMemoryKeychain::new());
     kc.set(&e.connection_id, "staging-password").unwrap();
-    assert!(open(&e, &e.repo, &e.connection_id, &kc).await.is_ok());
+    assert!(open(&e, &e.repo, &e.connection_id, &kc).await.is_none());
 
     // Another process points the row at its own host, TLS off.
     sqlx::query(
@@ -317,7 +318,7 @@ async fn a_connection_pointed_elsewhere_behind_the_apps_back_is_not_opened() {
     .execute(&e.pool)
     .await
     .unwrap();
-    let err = open(&e, &e.repo, &e.connection_id, &kc).await.err();
+    let err = open(&e, &e.repo, &e.connection_id, &kc).await;
     assert!(
         matches!(err, Some(RanchError::ConnectionUnverified { .. })),
         "{err:?}"
@@ -355,7 +356,7 @@ async fn a_row_naming_another_secret_opens_nothing() {
         .unwrap();
 
         // ranch-mcp: the seal is bound to the id it was made for.
-        let err = open(&e, &e.repo, &id, &kc).await.err();
+        let err = open(&e, &e.repo, &id, &kc).await;
         assert!(
             matches!(err, Some(RanchError::ConnectionUnverified { .. })),
             "{id}: {err:?}"
@@ -367,7 +368,7 @@ async fn a_row_naming_another_secret_opens_nothing() {
             Arc::new(HmacSealer::for_app(Some([42u8; 32]))),
             Arc::new(SystemClock),
         );
-        let err = open(&e, &app, &id, &kc).await.err();
+        let err = open(&e, &app, &id, &kc).await;
         assert!(
             matches!(err, Some(RanchError::InvalidInput { .. })),
             "{id}: {err:?}"
@@ -424,7 +425,7 @@ async fn a_lock_set_by_the_app_holds_with_approvals_off() {
     let err = precheck().await.unwrap_err();
     assert!(matches!(err, RanchError::BlockedReadonly { .. }), "{err:?}");
     let kc: Arc<dyn SecretStore> = Arc::new(InMemoryKeychain::new());
-    let err = open(&e, &e.repo, &e.connection_id, &kc).await.err();
+    let err = open(&e, &e.repo, &e.connection_id, &kc).await;
     assert!(
         matches!(err, Some(RanchError::ConnectionUnverified { .. })),
         "{err:?}"
