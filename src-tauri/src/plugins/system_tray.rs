@@ -24,11 +24,18 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
                 ],
             )?;
 
-            // Build tray icon
-            TrayIconBuilder::with_id("main-tray")
-                .menu(&menu)
-                .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Tauri App Template")
+            // On macOS the menu bar icon is a template image: black bars on
+            // transparent, which the system draws in the menu bar's colour.
+            // Elsewhere a panel may be dark or light, so the app icon stays.
+            #[cfg(target_os = "macos")]
+            let tray = TrayIconBuilder::with_id("main-tray")
+                .icon(tauri::include_image!("icons/tray.png"))
+                .icon_as_template(true);
+            #[cfg(not(target_os = "macos"))]
+            let tray = TrayIconBuilder::with_id("main-tray")
+                .icon(app.default_window_icon().unwrap().clone());
+            tray.menu(&menu)
+                .tooltip("Ranch")
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
                     // Left click to show main window
