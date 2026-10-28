@@ -240,7 +240,9 @@ impl BackendSpec for BullmqRedisSpec {
 /// The same CA, or none on both sides. Compared as written: when in
 /// doubt, it is another one.
 fn same_ca(a: Option<&str>, b: Option<&str>) -> bool {
-    let written = |ca: Option<&str>| ca.map(str::trim).filter(|ca| !ca.is_empty());
+    fn written(ca: Option<&str>) -> Option<&str> {
+        ca.map(str::trim).filter(|ca| !ca.is_empty())
+    }
     written(a) == written(b)
 }
 
