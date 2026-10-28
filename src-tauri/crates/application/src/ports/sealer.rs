@@ -9,14 +9,17 @@
 //!   - each approval it grants (`mcp_pending_approvals.decision_seal`);
 //!   - the safety settings ([`SafetySetting`](super::settings::SafetySetting),
 //!     a `seal:<key>` row each, written by the settings store alone);
-//!   - each connection's agent read-only flag and lock
-//!     (`connections.safety_seal`, written by the connection repository
-//!     alone, in the transaction that changes them).
+//!   - each connection's agent read-only flag and lock, and where it
+//!     points: its backend and endpoint (`connections.safety_seal`, written
+//!     by the connection repository alone, in the transaction that changes
+//!     them).
 //!
 //! `ranch-mcp` checks the seals and treats a missing or wrong one as the
 //! most restrictive value: no write, approval required, AI off, payloads
-//! withheld. The app seals whenever it writes one of these values; the
-//! first run that creates the key seals the state as it finds it.
+//! withheld. A connection whose seal does not hold is not opened at all,
+//! reads included: its password would go wherever the row points. The app
+//! seals whenever it writes one of these values; the first run that creates
+//! the key seals the state as it finds it.
 
 /// What a seal check says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,8 +58,28 @@ fn flag(value: Option<i64>) -> &'static str {
     }
 }
 
-/// A connection's agent read-only flag and lock.
-pub fn connection_parts(id: &str, mcp_readonly: Option<i64>, is_locked: i64) -> [&str; 4] {
+/// A connection's agent read-only flag and lock, and its `backend` and
+/// `endpoint` columns as stored: the server its password is sent to.
+pub fn connection_parts<'a>(
+    id: &'a str,
+    mcp_readonly: Option<i64>,
+    is_locked: i64,
+    backend: &'a str,
+    endpoint: &'a str,
+) -> [&'a str; 6] {
+    [
+        "connection",
+        id,
+        flag(mcp_readonly),
+        flag(Some(is_locked)),
+        backend,
+        endpoint,
+    ]
+}
+
+/// What a connection's seal covered before it covered the endpoint. Only
+/// read to carry those seals over (`ConnectionRepository::upgrade_seals`).
+pub fn legacy_connection_parts(id: &str, mcp_readonly: Option<i64>, is_locked: i64) -> [&str; 4] {
     ["connection", id, flag(mcp_readonly), flag(Some(is_locked))]
 }
 

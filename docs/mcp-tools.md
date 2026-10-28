@@ -207,10 +207,12 @@ another connection or tool fails with `approvalInvalid`, and never falls back
 to "then check the lock instead". Undecided requests older than one hour are
 purged.
 
-The safety settings and each connection's read-only flag and lock are sealed
-the same way, and a value without the app's seal counts as its strictest
-setting. A process that edits Ranch's database (an agent with a shell, say)
-approves nothing and opens nothing (on Linux, where the Secret Service gives
+The safety settings and each connection's read-only flag, lock and endpoint
+are sealed the same way, and a value without the app's seal counts as its
+strictest setting; a connection whose seal does not hold is not opened at all,
+reads included (`connectionUnverified`). A process that edits Ranch's database
+(an agent with a shell, say) approves nothing, opens nothing and redirects
+nothing (on Linux, where the Secret Service gives
 the key to any process of the user, this holds only as far as the keychain
 does).
 
@@ -244,6 +246,7 @@ human-readable `message`, so an agent can branch without parsing prose:
 | `approvalInvalid` | The approval does not authorize this call. | Do not retry the same call without a new approval. |
 | `hostUnavailable` | The Ranch app is not running. | Ask the user to open Ranch. |
 | `connectionLocked` | The connection is locked and no approval was needed (approval mode `off`). | Ask the user to unlock it in Ranch. |
+| `connectionUnverified` | Ranch cannot vouch for the connection's settings: the app did not save them as they stand. Reads are refused too. | Ask the user to check the connection in Ranch and save it. |
 | `unsupported` | The connection's backend does not provide this, named in the message. | Use another tool or tell the user. |
 | `connectionNotFound`, `jobNotFound`, `schedulerNotFound` | The id does not name anything (anymore). | List again. |
 | `invalidJobState` | The job is not in a state the action applies to (retrying a job that has not failed). | Read the job again. |

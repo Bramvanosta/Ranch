@@ -5,7 +5,10 @@
 //!   1. **MCP read-only**: `connections.mcp_readonly`,
 //!      falling back to the global default. Blocks with `BlockedReadonly`.
 //!   2. **Human approval**.
-//!   3. **Session lock**: unchanged, enforced by the write pipeline.
+//!   3. **Lock**: a write that needs no approval is refused on a connection
+//!      the app sealed as locked, as it stands now (the actor holds the lock
+//!      it was opened with); the write pipeline checks the actor's lock
+//!      too. An approval passes the lock, there as here.
 //!
 //! The model is deliberately a per-connection read-only flag and a *global*
 //! approval mode.
@@ -18,6 +21,7 @@ use crate::application::ports::settings::{SafetySetting, Sealed};
 use crate::application::ports::{ConnectionRepository, SettingsStore};
 use crate::domain::audit::ApprovalGrant;
 use crate::domain::errors::RanchError;
+use crate::domain::lock::{check_lock_or_err, ReadOnlyState};
 
 /// `kv_settings` key of the AI features switch (Settings › AI
 /// features). Unset = on: existing installs keep their agents.
@@ -137,10 +141,31 @@ pub struct GateRequest {
     pub target_preview: Option<serde_json::Value>,
 }
 
+/// Gate step 3 for a write that needs no approval: the lock the app sealed,
+/// read now. A row whose seal does not hold was blocked as read-only at
+/// step 1.
+pub async fn check_sealed_lock(
+    connections: &dyn ConnectionRepository,
+    connection_id: &str,
+) -> Result<(), RanchError> {
+    let access = connections
+        .agent_access(connection_id)
+        .await?
+        .ok_or_else(|| RanchError::ConnectionNotFound {
+            id: connection_id.to_string(),
+        })?;
+    let lock = if access.locked || !access.sealed {
+        ReadOnlyState::Locked
+    } else {
+        ReadOnlyState::Unlocked
+    };
+    check_lock_or_err(lock, connection_id, &access.name)
+}
+
 /// Steps 1 and 2a of the gate, before anything costly: MCP read-only, then
 /// "is an approval needed, and is someone there to give it?". `Ok(false)` =
-/// proceed under the session lock; `Ok(true)` = build the target preview and
-/// call [`request_approval`].
+/// proceed under the lock (checked here as sealed, then by the actor);
+/// `Ok(true)` = build the target preview and call [`request_approval`].
 pub async fn precheck(
     settings: &dyn SettingsStore,
     connections: &dyn ConnectionRepository,
@@ -153,6 +178,9 @@ pub async fn precheck(
         .await?
         .requires_approval(kind)
     {
+        if kind == ToolKind::Write {
+            check_sealed_lock(connections, connection_id).await?;
+        }
         return Ok(false);
     }
     // Fail fast: never queue a request nobody can see.

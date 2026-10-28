@@ -3,14 +3,20 @@
 //! "approved" status, a connection opened to agent writes, approvals turned
 //! off, AI turned back on.
 //!
+//! Nor does it open a connection the app did not seal, reads included: the
+//! row says where the password goes.
+//!
 //! The stores here check seals as ranch-mcp's do (`HmacSealer::for_agents`);
 //! the app's writes seal with the same key, as they would in the GUI.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use ranch_lib::adapters::bullmq_redis::resolve_connection_config;
 use ranch_lib::adapters::hmac_sealer::HmacSealer;
-use ranch_lib::adapters::sqlite::{SqliteConnectionRepository, SqliteSettingsStore};
+use ranch_lib::adapters::sqlite::{
+    write_pipeline, SqliteConnectionRepository, SqliteSettingsStore,
+};
 use ranch_lib::adapters::system_clock::SystemClock;
 use ranch_lib::application::ports::{ConnectionRepository, Sealer, SettingsStore};
 
@@ -105,6 +111,19 @@ fn request(env: &Env) -> GateRequest {
         arguments: serde_json::json!({ "jobId": "42" }),
         target_preview: None,
     }
+}
+
+/// What ranch-mcp does before it sends anything to a connection: resolve
+/// its settings and its password. `repo` checks seals or not.
+async fn open(
+    env: &Env,
+    repo: &dyn ConnectionRepository,
+    id: &str,
+    keychain: &Arc<dyn SecretStore>,
+) -> Result<(), RanchError> {
+    resolve_connection_config(id, repo, keychain, write_pipeline(&env.pool))
+        .await
+        .map(|_| ())
 }
 
 async fn writable(env: &Env) -> bool {
@@ -281,4 +300,133 @@ async fn the_apps_approval_is_honoured_and_bound_to_the_call() {
         .await
         .unwrap_err();
     assert!(matches!(err, RanchError::ApprovalDenied { .. }), "{err:?}");
+}
+
+#[tokio::test]
+async fn a_connection_pointed_elsewhere_behind_the_apps_back_is_not_opened() {
+    let e = env().await;
+    let kc: Arc<dyn SecretStore> = Arc::new(InMemoryKeychain::new());
+    kc.set(&e.connection_id, "staging-password").unwrap();
+    assert!(open(&e, &e.repo, &e.connection_id, &kc).await.is_ok());
+
+    // Another process points the row at its own host, TLS off.
+    sqlx::query(
+        "UPDATE connections SET endpoint = json_set(endpoint, '$.host', 'attacker.example', '$.tls', json('false')) WHERE id = ?",
+    )
+    .bind(&e.connection_id)
+    .execute(&e.pool)
+    .await
+    .unwrap();
+    let err = open(&e, &e.repo, &e.connection_id, &kc).await.err();
+    assert!(
+        matches!(err, Some(RanchError::ConnectionUnverified { .. })),
+        "{err:?}"
+    );
+    assert!(!writable(&e).await);
+}
+
+#[tokio::test]
+async fn a_row_naming_another_secret_opens_nothing() {
+    let e = env().await;
+    let kc: Arc<dyn SecretStore> = Arc::new(InMemoryKeychain::new());
+    kc.set("ranch::integrity", "the key of the seals").unwrap();
+    kc.set(&format!("{}::ssh", e.connection_id), "ssh-password")
+        .unwrap();
+
+    // Rows copied from a sealed connection, seal included, under ids that
+    // are the names of other secrets.
+    for id in [
+        "ranch::integrity".to_string(),
+        format!("{}::ssh", e.connection_id),
+    ] {
+        sqlx::query(
+            "INSERT INTO connections (id, environment_id, name, backend, endpoint, keychain_ref,
+                created_at, updated_at, is_locked, mcp_readonly, safety_seal)
+             SELECT ?, environment_id, ?, backend, endpoint, ?, created_at, updated_at,
+                0, 0, safety_seal
+             FROM connections WHERE id = ?",
+        )
+        .bind(&id)
+        .bind(&id)
+        .bind(&id)
+        .bind(&e.connection_id)
+        .execute(&e.pool)
+        .await
+        .unwrap();
+
+        // ranch-mcp: the seal is bound to the id it was made for.
+        let err = open(&e, &e.repo, &id, &kc).await.err();
+        assert!(
+            matches!(err, Some(RanchError::ConnectionUnverified { .. })),
+            "{id}: {err:?}"
+        );
+
+        // The app checks no seal, and still reads no such secret.
+        let app = SqliteConnectionRepository::new(
+            e.pool.clone(),
+            Arc::new(HmacSealer::for_app(Some([42u8; 32]))),
+            Arc::new(SystemClock),
+        );
+        let err = open(&e, &app, &id, &kc).await.err();
+        assert!(
+            matches!(err, Some(RanchError::InvalidInput { .. })),
+            "{id}: {err:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_lock_set_by_the_app_holds_with_approvals_off() {
+    let e = env().await;
+    set_kv_setting_inner(&e.kv, approval::APPROVAL_MODE_KEY, "off")
+        .await
+        .unwrap();
+    let precheck = || {
+        gate::precheck(
+            &e.kv,
+            &e.repo,
+            "remove_job",
+            ToolKind::Write,
+            &e.connection_id,
+        )
+    };
+    assert!(!precheck().await.unwrap(), "unlocked: no approval asked");
+
+    // The app locks it (its environment turns Production), then opens it
+    // to agent writes again: the lock stays, whatever lock the actor
+    // was opened with.
+    let environment_id = e
+        .repo
+        .get(&e.connection_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .environment_id;
+    e.repo
+        .recolor_environment(&environment_id, "env-production")
+        .await
+        .unwrap();
+    set_connection_mcp_readonly_inner(&e.connection_id, Some(false), &e.repo)
+        .await
+        .unwrap();
+    let err = precheck().await.unwrap_err();
+    assert!(
+        matches!(err, RanchError::ConnectionLocked { .. }),
+        "{err:?}"
+    );
+
+    // Unlocked in the file: the seal no longer holds, nothing opens.
+    sqlx::query("UPDATE connections SET is_locked = 0 WHERE id = ?")
+        .bind(&e.connection_id)
+        .execute(&e.pool)
+        .await
+        .unwrap();
+    let err = precheck().await.unwrap_err();
+    assert!(matches!(err, RanchError::BlockedReadonly { .. }), "{err:?}");
+    let kc: Arc<dyn SecretStore> = Arc::new(InMemoryKeychain::new());
+    let err = open(&e, &e.repo, &e.connection_id, &kc).await.err();
+    assert!(
+        matches!(err, Some(RanchError::ConnectionUnverified { .. })),
+        "{err:?}"
+    );
 }

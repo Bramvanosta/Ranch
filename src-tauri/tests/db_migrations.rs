@@ -171,15 +171,16 @@ async fn kept_columns(pool: &SqlitePool) -> Vec<Vec<Option<String>>> {
 
 /// A database written when a connection had one column per Redis setting:
 /// each connection reads back as BullMQ on Redis with its settings in the
-/// endpoint, every other column as it was, and its seal still holds for
-/// `ranch-mcp` (a tampered one still does not).
+/// endpoint, every other column as it was, and its seal, carried over by
+/// the app to cover the endpoint, holds for `ranch-mcp` (a tampered one
+/// still does not).
 #[tokio::test]
 async fn redis_columns_move_to_a_backend_and_its_endpoint() {
     use ranch_lib::adapters::bullmq_redis::endpoint::{BullmqRedisSpec, RedisEndpoint};
     use ranch_lib::adapters::hmac_sealer::HmacSealer;
     use ranch_lib::adapters::sqlite::SqliteConnectionRepository;
     use ranch_lib::adapters::system_clock::SystemClock;
-    use ranch_lib::application::ports::sealer::{connection_parts, Check, Sealer};
+    use ranch_lib::application::ports::sealer::{legacy_connection_parts, Check, Sealer};
     use ranch_lib::application::ports::{BackendSpec, ConnectionRepository};
     use serde_json::json;
 
@@ -297,9 +298,9 @@ async fn redis_columns_move_to_a_backend_and_its_endpoint() {
         // c5's flags were changed behind the app's back: its seal is for
         // another state.
         let seal = if id == "c5" {
-            app.seal(&connection_parts(id, Some(0), locked))
+            app.seal(&legacy_connection_parts(id, Some(0), locked))
         } else {
-            app.seal(&connection_parts(id, ro, locked))
+            app.seal(&legacy_connection_parts(id, ro, locked))
         };
         sqlx::query(
             "INSERT INTO connections (id, environment_id, name, redis_host, redis_port, redis_db,
@@ -411,9 +412,10 @@ async fn redis_columns_move_to_a_backend_and_its_endpoint() {
         (tunnel.host.as_str(), tunnel.port, tunnel.user.as_str()),
         ("bastion.example.com", 2222, "ops")
     );
-    assert_eq!(c3.keychain_ref, "c3");
 
-    // The seals were made before the upgrade and not touched by it.
+    // The seals were made before the upgrade and not touched by it. They
+    // cover the flags only: no connection opens until the app carries them
+    // over, the tampered one excepted.
     let agents = HmacSealer::for_agents(Some(KEY));
     let flags: Vec<(String, Option<i64>, i64, Option<String>)> = sqlx::query_as(
         "SELECT id, mcp_readonly, is_locked, safety_seal FROM connections ORDER BY id",
@@ -428,12 +430,33 @@ async fn redis_columns_move_to_a_backend_and_its_endpoint() {
             Check::Valid
         };
         assert_eq!(
-            agents.check(&connection_parts(&id, ro, locked), seal.as_deref()),
+            agents.check(&legacy_connection_parts(&id, ro, locked), seal.as_deref()),
             expected,
             "{id}"
         );
+        assert!(
+            !repo.agent_access(&id).await.unwrap().unwrap().sealed,
+            "{id}"
+        );
+        assert!(
+            !repo.stored_settings(&id).await.unwrap().unwrap().sealed,
+            "{id}"
+        );
+    }
+    assert_eq!(repo.upgrade_seals(&agents).await.unwrap(), 4);
+    assert_eq!(
+        repo.upgrade_seals(&agents).await.unwrap(),
+        0,
+        "once is enough"
+    );
+    for id in ["c1", "c2", "c3", "c4", "c5"] {
         assert_eq!(
-            repo.agent_access(&id).await.unwrap().unwrap().sealed,
+            repo.agent_access(id).await.unwrap().unwrap().sealed,
+            id != "c5",
+            "{id}"
+        );
+        assert_eq!(
+            repo.stored_settings(id).await.unwrap().unwrap().sealed,
             id != "c5",
             "{id}"
         );

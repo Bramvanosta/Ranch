@@ -6,7 +6,7 @@
 
 ## Decision
 
-The app seals, with an HMAC keyed by a secret in the OS keychain (`ranch::integrity`), each approval it grants and every value that governs agents: the AI switch, the approval mode, the agent read-only default and per-connection flags, the lock, the job-data sharing mode. `ranch-mcp` checks each seal and reads a missing or wrong one as the strictest value. Approval state changes are conditional updates whose affected-row count decides the outcome, so an approval is consumed once.
+The app seals, with an HMAC keyed by a secret in the OS keychain (`ranch::integrity`), each approval it grants and every value that governs agents: the AI switch, the approval mode, the agent read-only default and per-connection flags, the lock, where a connection points, the job-data sharing mode. `ranch-mcp` checks each seal and reads a missing or wrong one as the strictest value; it opens no connection whose seal does not hold, since the row says where its password is sent. Approval state changes are conditional updates whose affected-row count decides the outcome, so an approval is consumed once.
 
 ## Consequences
 

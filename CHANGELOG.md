@@ -112,6 +112,12 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 - **Every page uses the full width.** The connections page and Needs attention were centred in a narrower column (and Agents capped), unlike every other screen.
 - **The Map names worker pools usefully.** Workers without a name were grouped by host. In containers every client comes from the same gateway address, so they all became one "Unnamed workers on 192.168.…" pool. They are now grouped by the queue they serve ("cron workers"), and the pool's details say how to name them.
 
+### Security (agents)
+
+- **Ranch's MCP server only opens connections the app saved.** A connection's seal covers where it points (its backend and endpoint), and `ranch-mcp` refuses a connection whose seal does not hold, reads included, with `connectionUnverified`: a process that edits Ranch's database can no longer have a saved password sent to its own host, or point a connection open to agent writes at another server. A connection's password is the keychain entry named after its id, never one the database names.
+- **A lock set in the app stops agent writes at once.** With approvals off, an agent's write is refused on a connection the app locked, even when the agent had used the connection before the lock.
+- The first launch after the update carries over the seals that still hold. A connection whose seal does not is refused to agents until you save it again in Ranch.
+
 ## [v0.2.0] - 2026-09-21
 
 The first real release. In short: connection **groups and environments**; **agents (MCP) whose writes wait for your approval**, with a full activity log; **the whole BullMQ toolbox**: add jobs, drain / clean / retry all, create and edit schedulers, workers, flows, metrics over any range, search across a whole state, one view of everything that failed, a real home page; **Ranch server**, the same app as a Docker image with OIDC sign-in; and releases built in CI (signed and notarized macOS app, Linux bundles) for an app that now **updates itself**.

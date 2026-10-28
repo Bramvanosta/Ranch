@@ -105,10 +105,12 @@ pub fn run() {
             let db = tauri::async_runtime::block_on(adapters::sqlite::Db::init(&app_data_dir))?;
             let keychain = adapters::secrets::OsKeychain::new();
 
-            // The key that seals approvals and the agent safety settings
-            // (`application::ports::sealer`). The run that creates it seals
-            // the state as it is. Without a keychain nothing is sealed, and
-            // ranch-mcp refuses agent writes.
+            // The key that seals approvals, the agent safety settings and
+            // the connections (`application::ports::sealer`). The run that
+            // creates it seals the state as it is; a later run carries over
+            // the connection seals made before they covered the endpoint,
+            // those that still hold. Without a keychain nothing is sealed,
+            // and ranch-mcp opens no connection.
             let (key, created) = match adapters::hmac_sealer::load_or_create(&keychain) {
                 Ok((key, created)) => (Some(key), created),
                 Err(e) => {
@@ -123,6 +125,17 @@ pub fn run() {
                     state.settings.seal_all().await?;
                     state.repository.reseal_all().await
                 })?;
+            } else if let Some(key) = key {
+                // Not fatal: a connection left unsealed is refused to agents,
+                // not to the user.
+                let verifier = adapters::hmac_sealer::HmacSealer::for_agents(Some(key));
+                match tauri::async_runtime::block_on(state.repository.upgrade_seals(&verifier)) {
+                    Ok(0) => {}
+                    Ok(upgraded) => {
+                        tracing::info!(upgraded, "connection seals now cover the endpoint")
+                    }
+                    Err(e) => tracing::warn!(error = %e, "could not carry connection seals over"),
+                }
             }
 
             // The GUI is the only place an agent's write can be

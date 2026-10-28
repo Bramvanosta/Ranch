@@ -127,9 +127,26 @@ mod tests {
         assert_eq!(unhex("zz"), None);
         assert_eq!(unhex("abc"), None);
         assert_ne!(
-            connection_parts("c1", None, 1),
-            connection_parts("c1", Some(0), 1),
+            connection_parts("c1", None, 1, "bullmq-redis", "{}"),
+            connection_parts("c1", Some(0), 1, "bullmq-redis", "{}"),
             "null and false differ"
+        );
+        let endpoint = |host: &str| format!(r#"{{"host":"{host}","port":6379}}"#);
+        let (staging, prod) = (endpoint("staging"), endpoint("prod"));
+        assert_ne!(
+            mac(
+                &key,
+                &connection_parts("c1", None, 0, "bullmq-redis", &staging)
+            )
+            .finalize()
+            .into_bytes(),
+            mac(
+                &key,
+                &connection_parts("c1", None, 0, "bullmq-redis", &prod)
+            )
+            .finalize()
+            .into_bytes(),
+            "the seal covers where the connection points"
         );
         assert_ne!(setting_parts("k", None), setting_parts("k", Some("")));
     }

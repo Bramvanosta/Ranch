@@ -9,8 +9,7 @@
 //!
 //! Service name = `dev.ranch.app` (matches `tauri.conf.json` identifier).
 //! Each connection's credential is stored under that service with the
-//! connection's id as the username (and `keychain_ref` column on the
-//! `connections` table holds that id for resolution at use time).
+//! connection's id as the username (`ports::secrets::password_entry`).
 
 use std::collections::HashMap;
 use std::sync::Mutex;

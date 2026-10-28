@@ -5,13 +5,15 @@ use ranch_domain::hierarchy::{
     Connection, Environment, EnvironmentSelector, Group, GroupSelector, MoveConnectionResult,
 };
 
+use super::sealer::Sealer;
+
 /// Work that must succeed for a write to be kept. It runs inside the
 /// write's transaction, after the rows and before the commit, so a failure
 /// leaves nothing behind: the secrets go to the keychain there.
 pub type BeforeCommit<'a> = &'a (dyn Fn() -> Result<(), RanchError> + Send + Sync);
 
-/// The same, for a copy: it is given the keychain reference of the
-/// connection being copied.
+/// The same, for a copy: it is given the id of the connection being
+/// copied.
 pub type CopySecrets<'a> = &'a (dyn Fn(&str) -> Result<(), RanchError> + Send + Sync);
 
 /// A connection to save. The lock and the agent setting it starts with
@@ -46,14 +48,18 @@ pub struct ConnectionEdit {
 }
 
 /// What a connection's backend is opened with, as stored (secrets apart).
+/// Its password is the secret named after its id
+/// (`ports::secrets::password_entry`).
 #[derive(Debug, Clone)]
 pub struct StoredSettings {
     pub backend: BackendKind,
     pub endpoint: Endpoint,
-    pub keychain_ref: String,
     pub locked: bool,
     pub name: String,
     pub env_color: Option<String>,
+    /// The backend, the endpoint and the lock as the app sealed them. A
+    /// process that checks seals opens nothing else.
+    pub sealed: bool,
 }
 
 /// What decides whether agents may write to a connection, and whether the
@@ -62,8 +68,10 @@ pub struct StoredSettings {
 pub struct AgentAccess {
     /// `None`: the connection follows the global default.
     pub mcp_readonly: Option<bool>,
+    pub locked: bool,
     pub name: String,
-    /// The agent read-only flag and the lock as the app sealed them.
+    /// The agent read-only flag, the lock and the endpoint as the app
+    /// sealed them.
     pub sealed: bool,
 }
 
@@ -82,7 +90,11 @@ pub trait ConnectionRepository: Send + Sync {
     async fn agent_access(&self, id: &str) -> Result<Option<AgentAccess>, RanchError>;
     /// Seal every connection as it stands: the first run with a key.
     async fn reseal_all(&self) -> Result<(), RanchError>;
-    async fn keychain_ref(&self, id: &str) -> Result<Option<String>, RanchError>;
+    /// Seal again, with the endpoint, every connection whose seal from
+    /// before the endpoint was sealed `verifier` finds valid; a connection
+    /// whose seal does not hold stays unsealed. Returns how many were
+    /// carried over.
+    async fn upgrade_seals(&self, verifier: &dyn Sealer) -> Result<usize, RanchError>;
     /// Save a new connection, placing it (creating a `New` group or
     /// environment), then run `before_commit`.
     async fn insert(

@@ -37,6 +37,7 @@ use ranch_application::ports::backend::{
     Maintenance, Metrics, QueueBackend, QueueControl, QueueReads, Schedules, ServerReads, Workers,
 };
 use ranch_application::ports::connections::ConnectionRepository;
+use ranch_application::ports::secrets::password_entry;
 use ranch_application::ports::ProgressSink;
 use ranch_application::ports::SecretStore;
 use ranch_application::{ConnectionStamp, WritePipeline};
@@ -127,6 +128,10 @@ impl Backends for BullmqRedisBackends {
 /// A saved connection's actor settings, from its stored row and its
 /// keychain entries. The BullMQ backend opens connections with it; `writes`
 /// is the pipeline its actor runs every write through.
+///
+/// A row whose seal does not hold is refused before any secret is read: in
+/// `ranch-mcp` (the one process that checks seals) the endpoint, the lock
+/// and the password's name all come from rows the app sealed.
 pub async fn resolve_connection_config(
     connection_id: &str,
     connections: &dyn ConnectionRepository,
@@ -140,6 +145,11 @@ pub async fn resolve_connection_config(
             id: connection_id.to_string(),
         })?;
 
+    if !stored.sealed {
+        return Err(RanchError::ConnectionUnverified {
+            connection_name: stored.name,
+        });
+    }
     if stored.backend.as_str() != BULLMQ_REDIS {
         return Err(RanchError::InvalidInput {
             reason: format!("No backend of kind `{}` here", stored.backend),
@@ -147,7 +157,7 @@ pub async fn resolve_connection_config(
     }
     let endpoint = RedisEndpoint::parse(&stored.endpoint)?;
 
-    let password = keychain.get(&stored.keychain_ref)?;
+    let password = keychain.get(password_entry(connection_id)?)?;
 
     // Resolve the SSH password too when the tunnel uses
     // password auth. Stored at `{id}::ssh`.

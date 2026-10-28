@@ -9,7 +9,7 @@ use ranch_application::ports::connections::{
     AgentAccess, BeforeCommit, ConnectionEdit, ConnectionRepository, CopySecrets, NewConnection,
     StoredSettings,
 };
-use ranch_application::ports::sealer::{connection_parts, Check, Sealer};
+use ranch_application::ports::sealer::{connection_parts, legacy_connection_parts, Check, Sealer};
 use ranch_application::ports::Clock;
 use ranch_domain::endpoint::{BackendKind, Endpoint};
 use ranch_domain::errors::RanchError;
@@ -40,22 +40,24 @@ impl SqliteConnectionRepository {
     }
 }
 
-/// Seal one connection as it now stands. Called by every write of its flags,
-/// in the same transaction.
+/// Seal one connection as it now stands. Called by every write of its flags
+/// or its endpoint, in the same transaction.
 async fn reseal(
     conn: &mut sqlx::SqliteConnection,
     sealer: &dyn Sealer,
     id: &str,
 ) -> Result<(), RanchError> {
-    let row: Option<(Option<i64>, i64)> =
-        sqlx::query_as("SELECT mcp_readonly, is_locked FROM connections WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(RanchError::database)?;
-    if let Some((mcp_readonly, is_locked)) = row {
+    let row: Option<(Option<i64>, i64, String, String)> = sqlx::query_as(
+        "SELECT mcp_readonly, is_locked, backend, endpoint FROM connections WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(RanchError::database)?;
+    if let Some((mcp_readonly, is_locked, backend, endpoint)) = row {
+        let parts = connection_parts(id, mcp_readonly, is_locked, &backend, &endpoint);
         sqlx::query("UPDATE connections SET safety_seal = ? WHERE id = ?")
-            .bind(sealer.seal(&connection_parts(id, mcp_readonly, is_locked)))
+            .bind(sealer.seal(&parts))
             .bind(id)
             .execute(&mut *conn)
             .await
@@ -141,12 +143,13 @@ fn encode_endpoint(endpoint: &Endpoint) -> String {
 /// Row tuple for `stored_settings`, aliased so clippy's `type_complexity`
 /// lint stays quiet (the columns include `is_locked`, `name`, and the
 /// joined `env.color_token` so the backend can open with full identity +
-/// initial lock state).
+/// initial lock state, and what the seal covers).
 type SettingsRow = (
     String,         // backend
     String,         // endpoint (JSON)
-    String,         // keychain_ref
     i64,            // is_locked
+    Option<i64>,    // mcp_readonly
+    Option<String>, // safety_seal
     String,         // name
     Option<String>, // env_color (joined from environments.color_token)
 );
@@ -331,10 +334,13 @@ impl ConnectionRepository for SqliteConnectionRepository {
         // JOIN` so a connection with a missing env row (shouldn't happen:
         // FK constraint, but defensive) still resolves with `env_color =
         // None`.
+        //
+        // The seal is checked on the very row the backend opens with, so
+        // nothing written between the check and the open gets through.
         let row: Option<SettingsRow> = sqlx::query_as(
             r#"
-            SELECT c.backend, c.endpoint, c.keychain_ref,
-                   c.is_locked, c.name, e.color_token AS env_color
+            SELECT c.backend, c.endpoint, c.is_locked, c.mcp_readonly,
+                   c.safety_seal, c.name, e.color_token AS env_color
             FROM connections c
             LEFT JOIN environments e ON c.environment_id = e.id
             WHERE c.id = ?
@@ -345,33 +351,43 @@ impl ConnectionRepository for SqliteConnectionRepository {
         .await
         .map_err(RanchError::database)?;
         Ok(row.map(
-            |(backend, endpoint, keychain_ref, is_locked, name, env_color)| StoredSettings {
-                backend: BackendKind::new(backend),
-                endpoint: decode_endpoint_column(&endpoint, id),
-                keychain_ref,
-                locked: is_locked != 0,
-                name,
-                env_color,
+            |(backend, endpoint, is_locked, mcp_readonly, seal, name, env_color)| {
+                let parts = connection_parts(id, mcp_readonly, is_locked, &backend, &endpoint);
+                StoredSettings {
+                    sealed: self.sealer.check(&parts, seal.as_deref()) == Check::Valid,
+                    endpoint: decode_endpoint_column(&endpoint, id),
+                    backend: BackendKind::new(backend),
+                    locked: is_locked != 0,
+                    name,
+                    env_color,
+                }
             },
         ))
     }
 
     async fn agent_access(&self, id: &str) -> Result<Option<AgentAccess>, RanchError> {
-        let row: Option<(Option<i64>, i64, Option<String>, String)> = sqlx::query_as(
-            "SELECT mcp_readonly, is_locked, safety_seal, name FROM connections WHERE id = ?",
+        type AccessRow = (Option<i64>, i64, String, String, Option<String>, String);
+        let row: Option<AccessRow> = sqlx::query_as(
+            r#"
+            SELECT mcp_readonly, is_locked, backend, endpoint, safety_seal, name
+            FROM connections WHERE id = ?
+            "#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await
         .map_err(RanchError::database)?;
-        Ok(row.map(|(explicit, is_locked, seal, name)| AgentAccess {
-            mcp_readonly: explicit.map(|v| v != 0),
-            name,
-            sealed: self
-                .sealer
-                .check(&connection_parts(id, explicit, is_locked), seal.as_deref())
-                == Check::Valid,
-        }))
+        Ok(
+            row.map(|(explicit, is_locked, backend, endpoint, seal, name)| {
+                let parts = connection_parts(id, explicit, is_locked, &backend, &endpoint);
+                AgentAccess {
+                    mcp_readonly: explicit.map(|v| v != 0),
+                    locked: is_locked != 0,
+                    name,
+                    sealed: self.sealer.check(&parts, seal.as_deref()) == Check::Valid,
+                }
+            }),
+        )
     }
 
     async fn reseal_all(&self) -> Result<(), RanchError> {
@@ -386,14 +402,28 @@ impl ConnectionRepository for SqliteConnectionRepository {
         Ok(())
     }
 
-    async fn keychain_ref(&self, id: &str) -> Result<Option<String>, RanchError> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT keychain_ref FROM connections WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(RanchError::database)?;
-        Ok(row.map(|(r,)| r))
+    async fn upgrade_seals(&self, verifier: &dyn Sealer) -> Result<usize, RanchError> {
+        type SealRow = (String, Option<i64>, i64, String, String, Option<String>);
+        let rows: Vec<SealRow> = sqlx::query_as(
+            "SELECT id, mcp_readonly, is_locked, backend, endpoint, safety_seal FROM connections",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RanchError::database)?;
+        let mut conn = self.pool.acquire().await.map_err(RanchError::database)?;
+        let mut upgraded = 0;
+        for (id, mcp_readonly, is_locked, backend, endpoint, seal) in rows {
+            let current = connection_parts(&id, mcp_readonly, is_locked, &backend, &endpoint);
+            if verifier.check(&current, seal.as_deref()) == Check::Valid {
+                continue;
+            }
+            let legacy = legacy_connection_parts(&id, mcp_readonly, is_locked);
+            if verifier.check(&legacy, seal.as_deref()) == Check::Valid {
+                reseal(&mut conn, self.sealer.as_ref(), &id).await?;
+                upgraded += 1;
+            }
+        }
+        Ok(upgraded)
     }
 
     async fn insert(
@@ -433,7 +463,9 @@ impl ConnectionRepository for SqliteConnectionRepository {
         .bind(&new.name)
         .bind(new.backend.as_str())
         .bind(encode_endpoint(&new.endpoint))
-        .bind(&connection_id) // keychain_ref convention: same as connection id
+        // The column is kept for earlier releases' ranch-mcp; this one
+        // names the password after the id and never reads it.
+        .bind(&connection_id)
         .bind(is_locked)
         .bind(mcp_readonly)
         .bind(&now)
@@ -554,14 +586,12 @@ impl ConnectionRepository for SqliteConnectionRepository {
             String,       // name
             String,       // backend
             String,       // endpoint (JSON, copied as stored)
-            String,       // keychain_ref
             bool,         // is_locked
             Option<bool>, // mcp_readonly
         );
         let source: Option<SourceRow> = sqlx::query_as(
             r#"
-            SELECT environment_id, name, backend, endpoint,
-                   keychain_ref, is_locked, mcp_readonly
+            SELECT environment_id, name, backend, endpoint, is_locked, mcp_readonly
             FROM connections WHERE id = ?
             "#,
         )
@@ -570,7 +600,7 @@ impl ConnectionRepository for SqliteConnectionRepository {
         .await
         .map_err(RanchError::database)?;
 
-        let (env_id, source_name, backend, endpoint, source_keychain_ref, is_locked, mcp_readonly) =
+        let (env_id, source_name, backend, endpoint, is_locked, mcp_readonly) =
             source.ok_or_else(|| RanchError::ConnectionNotFound {
                 id: source_id.to_string(),
             })?;
@@ -585,8 +615,8 @@ impl ConnectionRepository for SqliteConnectionRepository {
         let existing_names: Vec<String> = existing_names.into_iter().map(|(n,)| n).collect();
         let new_name = next_duplicate_name(&source_name, &existing_names);
 
-        // Insert new row pointing at the new keychain_ref (same convention:
-        // keychain_ref = id), with the source's backend and endpoint. And its
+        // Insert new row (its `keychain_ref` column is its id, as `insert`
+        // writes it), with the source's backend and endpoint. And its
         // protections: a copy of a production connection is just as locked,
         // and just as read-only for agents, as the original: the same
         // server behind the same credentials.
@@ -613,7 +643,7 @@ impl ConnectionRepository for SqliteConnectionRepository {
         .map_err(RanchError::database)?;
         reseal(&mut tx, self.sealer.as_ref(), new_id).await?;
 
-        copy_secrets(&source_keychain_ref)?;
+        copy_secrets(source_id)?;
 
         tx.commit().await.map_err(RanchError::database)?;
 

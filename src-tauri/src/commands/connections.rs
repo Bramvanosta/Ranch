@@ -16,8 +16,8 @@
 //! each asks for), and the secrets travel beside it, to the keychain.
 //!
 //! Architecture invariants enforced here:
-//! - Credentials never land in SQLite: the `keychain_ref` column points at
-//!   the keychain entry whose name is the connection id.
+//! - Credentials never land in SQLite: a connection's password is the
+//!   keychain entry named after its id (`ports::secrets::password_entry`).
 //! - Commands 3 + 4 split a thin Tauri wrapper from a `_inner` async fn that
 //!   takes the `ConnectionRepository` and the keychain, so they're testable
 //!   without spinning up a Tauri runtime.
@@ -35,6 +35,7 @@ use crate::adapters::bullmq_redis::connection_actor::ConnectionRegistry;
 use crate::adapters::bullmq_redis::ssh_tunnel::ssh_keychain_name;
 use crate::app_state::AppState;
 use crate::application::ports::connections::{ConnectionEdit, NewConnection};
+use crate::application::ports::secrets::password_entry;
 use crate::application::ports::SecretStore;
 use crate::application::ports::{BackendSpecs, Backends, ConnectionRepository};
 use crate::commands::hierarchy::{EnvironmentSelector, GroupSelector};
@@ -223,7 +224,7 @@ fn uses_ssh_password(tunnel: Option<&ssh_config::SshTunnelConfig>) -> bool {
 }
 
 /// Fill a blank password from the keychain of the connection being edited
-/// (keychain ref = connection id), so a test does not fail for a password
+/// (the entry named after its id), so a test does not fail for a password
 /// the form never shows, but **only when the test targets the server the
 /// password was saved for**, as the backend of the saved connection judges
 /// it. Otherwise the renderer (or, on Ranch server, any signed-in user)
@@ -248,7 +249,9 @@ fn with_saved_secrets(
     }
     let new = Endpoint::new(args.endpoint.clone());
     if args.password.is_none() && spec.same_server(&saved.endpoint, &new) {
-        args.password = keychain.get(&id).unwrap_or(None);
+        args.password = password_entry(&id)
+            .and_then(|entry| keychain.get(entry))
+            .unwrap_or(None);
     }
     let tunnel = spec.tunnel(&new);
     if uses_ssh_password(tunnel.as_ref())
@@ -805,8 +808,8 @@ pub async fn duplicate_connection_inner(
     let new_id = uuid::Uuid::now_v7().to_string();
     // Inside the copy's transaction: the credential and the SSH password go
     // to new keychain entries, each skipped when the source had none.
-    let copy_secrets = |source_keychain_ref: &str| -> Result<(), RanchError> {
-        if let Some(secret) = keychain.get(source_keychain_ref)? {
+    let copy_secrets = |source_id: &str| -> Result<(), RanchError> {
+        if let Some(secret) = keychain.get(password_entry(source_id)?)? {
             keychain.set(&new_id, &secret)?;
         }
         if let Some(secret) = keychain.get(&ssh_keychain_name(source_id))? {
@@ -847,10 +850,10 @@ pub async fn remove_connection_inner(
     keychain: &Arc<dyn SecretStore>,
     registry: Option<&ConnectionRegistry>,
 ) -> Result<(), RanchError> {
-    let keychain_ref = connections
-        .keychain_ref(id)
-        .await?
-        .ok_or_else(|| RanchError::ConnectionNotFound { id: id.to_string() })?;
+    if connections.get(id).await?.is_none() {
+        return Err(RanchError::ConnectionNotFound { id: id.to_string() });
+    }
+    let password = password_entry(id)?;
 
     // Delete keychain entries FIRST. Rationale: leaking a stale credential in
     // the keychain is preferable to leaving a row pointing at a missing one
@@ -864,11 +867,7 @@ pub async fn remove_connection_inner(
     // + continue (matches the `remove_connection` pattern).
     let ssh_kc = ssh_keychain_name(id);
     let ssh_hostkey_kc = ssh_hostkey_keychain_name(id);
-    for entry_name in [
-        keychain_ref.as_str(),
-        ssh_kc.as_str(),
-        ssh_hostkey_kc.as_str(),
-    ] {
+    for entry_name in [password, ssh_kc.as_str(), ssh_hostkey_kc.as_str()] {
         if let Err(e) = keychain.delete(entry_name) {
             if let RanchError::KeychainUnavailable { .. } = &e {
                 tracing::warn!(
