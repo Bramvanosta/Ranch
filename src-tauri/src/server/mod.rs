@@ -24,10 +24,11 @@ pub mod oidc;
 pub mod session;
 
 use std::collections::{HashMap, VecDeque};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -44,6 +45,7 @@ use crate::adapters::secrets::FileSecretStore;
 use crate::adapters::sqlite::Db;
 use crate::app_state::AppState;
 use crate::contract::errors::RanchErrorDto;
+use crate::domain::errors::RanchError;
 
 pub use config::{Auth, OidcConfig, ServerConfig};
 use oidc::{OidcClient, OidcError};
@@ -64,44 +66,76 @@ struct Shell {
     session_key: Arc<SessionKey>,
     session_ttl_secs: u64,
     secrets_encrypted: bool,
-    /// Wrong Basic credentials, server-wide ([`FailedLogins`]).
+    /// Wrong Basic credentials, per client and server-wide ([`FailedLogins`]).
     failed_logins: Arc<Mutex<FailedLogins>>,
-    /// Sessions signed out before they expire, read once from the settings.
-    revoked: Arc<tokio::sync::OnceCell<Mutex<HashMap<String, u64>>>>,
+    /// Sessions signed out before they expire, read once from the settings;
+    /// the lock is held while a sign-out is saved, so two never overwrite
+    /// each other.
+    revoked: Arc<tokio::sync::OnceCell<tokio::sync::Mutex<HashMap<String, u64>>>>,
 }
 
-/// How many wrong Basic answers the whole server takes in
-/// [`FAILED_LOGIN_WINDOW`] before it refuses Basic sign-in to everyone.
-const MAX_FAILED_LOGINS: usize = 20;
+/// How many wrong Basic answers one client (by peer address) gets in
+/// [`FAILED_LOGIN_WINDOW`] before its Basic sign-in is refused.
+const MAX_FAILED_LOGINS_PER_CLIENT: usize = 10;
+/// How many the whole server takes in that window, all clients together,
+/// before it refuses Basic sign-in to everyone: a ceiling on guessing from
+/// many addresses, high enough that one client cannot reach it alone.
+const MAX_FAILED_LOGINS: usize = 200;
 const FAILED_LOGIN_WINDOW: Duration = Duration::from_secs(60);
 
-/// The delay on a wrong answer slows one client; this bounds them all,
-/// however many connections they open. Past the limit, Basic credentials
-/// are not even checked (right ones included) until the oldest failure
-/// ages out. An OIDC session is not affected.
+/// The delay on a wrong answer slows one connection; this bounds one client,
+/// however many connections it opens, and all of them together. Past a
+/// limit, Basic credentials are not even checked (right ones included)
+/// until the oldest failure ages out. An OIDC session is not affected.
+/// Behind a reverse proxy every client has the proxy's address, and shares
+/// one bucket.
 #[derive(Default)]
-struct FailedLogins(VecDeque<Instant>);
+struct FailedLogins {
+    all: VecDeque<Instant>,
+    /// `None`: a request whose peer address is unknown.
+    by_client: HashMap<Option<IpAddr>, VecDeque<Instant>>,
+}
+
+fn prune(failures: &mut VecDeque<Instant>, now: Instant) {
+    while failures
+        .front()
+        .is_some_and(|t| now.duration_since(*t) >= FAILED_LOGIN_WINDOW)
+    {
+        failures.pop_front();
+    }
+}
 
 impl FailedLogins {
     fn prune(&mut self, now: Instant) {
-        while self
-            .0
-            .front()
-            .is_some_and(|t| now.duration_since(*t) >= FAILED_LOGIN_WINDOW)
-        {
-            self.0.pop_front();
-        }
+        prune(&mut self.all, now);
+        self.by_client.retain(|_, failures| {
+            prune(failures, now);
+            !failures.is_empty()
+        });
     }
 
-    fn locked(&mut self, now: Instant) -> bool {
+    fn locked(&mut self, client: Option<IpAddr>, now: Instant) -> bool {
         self.prune(now);
-        self.0.len() >= MAX_FAILED_LOGINS
+        self.all.len() >= MAX_FAILED_LOGINS
+            || self
+                .by_client
+                .get(&client)
+                .is_some_and(|failures| failures.len() >= MAX_FAILED_LOGINS_PER_CLIENT)
     }
 
-    fn record(&mut self, now: Instant) {
+    fn record(&mut self, client: Option<IpAddr>, now: Instant) {
         self.prune(now);
-        self.0.push_back(now);
+        self.all.push_back(now);
+        self.by_client.entry(client).or_default().push_back(now);
     }
+}
+
+/// The peer address a request came from, when the server knows it.
+fn client_of(request: &Request) -> Option<IpAddr> {
+    request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip())
 }
 
 /// `kv_settings` key of the sessions signed out before they expire: a JSON
@@ -126,56 +160,71 @@ impl Shell {
             .session_key
             .open::<Session>("session", token)
             .filter(Session::is_live)?;
-        let revoked = self.revoked().await;
-        let revoked = revoked.lock().unwrap_or_else(|e| e.into_inner());
+        let revoked = match self.revoked().await {
+            Ok(revoked) => revoked,
+            Err(e) => {
+                tracing::error!(error = %e, "cannot read the signed-out sessions: no session is accepted");
+                return None;
+            }
+        };
+        let revoked = revoked.lock().await;
         (!revoked.contains_key(&session.id)).then_some(session)
     }
 
-    async fn revoked(&self) -> &Mutex<HashMap<String, u64>> {
+    /// The signed-out sessions, read from the settings the first time they
+    /// can be. Not read: an error (asked again next time), and no session
+    /// is taken on trust meanwhile.
+    async fn revoked(&self) -> Result<&tokio::sync::Mutex<HashMap<String, u64>>, RanchError> {
         self.revoked
-            .get_or_init(|| async {
-                let stored = self
-                    .app
-                    .settings
-                    .get(REVOKED_SESSIONS_KEY)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|raw| serde_json::from_str(&raw).ok())
-                    .unwrap_or_default();
-                Mutex::new(stored)
+            .get_or_try_init(|| async {
+                let stored: HashMap<String, u64> =
+                    match self.app.settings.get(REVOKED_SESSIONS_KEY).await? {
+                        Some(raw) => {
+                            serde_json::from_str(&raw).map_err(|e| RanchError::InvalidInput {
+                                reason: format!("the signed-out sessions do not read: {e}"),
+                            })?
+                        }
+                        None => HashMap::new(),
+                    };
+                Ok::<_, RanchError>(tokio::sync::Mutex::new(stored))
             })
             .await
     }
 
     /// Sign `session` out for good: its cookie opens nothing from now on,
-    /// here and after a restart. Expired ids are dropped on the way.
+    /// here and after a restart. Expired ids are dropped on the way. The
+    /// list stays locked until it is saved, so a sign-out saved at the same
+    /// time cannot write over this one.
     async fn revoke(&self, session: &Session) {
-        let now = session::now();
-        let raw = {
-            let revoked = self.revoked().await;
-            let mut revoked = revoked.lock().unwrap_or_else(|e| e.into_inner());
-            revoked.retain(|_, exp| *exp > now);
-            revoked.insert(session.id.clone(), session.exp);
-            serde_json::to_string(&*revoked).unwrap_or_default()
+        let revoked = match self.revoked().await {
+            Ok(revoked) => revoked,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot read the signed-out sessions: this sign-out is not saved");
+                return;
+            }
         };
+        let now = session::now();
+        let mut revoked = revoked.lock().await;
+        revoked.retain(|_, exp| *exp > now);
+        revoked.insert(session.id.clone(), session.exp);
+        let raw = serde_json::to_string(&*revoked).unwrap_or_default();
         if let Err(e) = self.app.settings.set(REVOKED_SESSIONS_KEY, &raw).await {
             tracing::warn!(error = %e, "could not save the sign-out; it holds until the server restarts");
         }
     }
 
-    fn basic_locked(&self) -> bool {
+    fn basic_locked(&self, client: Option<IpAddr>) -> bool {
         self.failed_logins
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .locked(Instant::now())
+            .locked(client, Instant::now())
     }
 
-    fn record_failed_login(&self) {
+    fn record_failed_login(&self, client: Option<IpAddr>) {
         self.failed_logins
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .record(Instant::now());
+            .record(client, Instant::now());
     }
 
     fn set_cookie(&self, name: &str, value: &str, path: &str, max_age: u64) -> HeaderValue {
@@ -257,9 +306,14 @@ pub async fn run(config: ServerConfig) -> Result<(), Box<dyn std::error::Error>>
 
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!("ranch-server listening on http://{}", config.bind);
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // With each request's peer address: wrong passwords are counted per
+    // client.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     // `docker stop`: close the Redis connections and SSH tunnels cleanly.
     app.connections.shutdown_all().await;
@@ -369,7 +423,8 @@ async fn require_auth(State(shell): State<Shell>, request: Request, next: Next) 
         return next.run(request).await;
     }
     let given = request.headers().get(header::AUTHORIZATION);
-    if given.is_some() && shell.credentials.is_some() && shell.basic_locked() {
+    let client = client_of(&request);
+    if given.is_some() && shell.credentials.is_some() && shell.basic_locked(client) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [(header::RETRY_AFTER, HeaderValue::from_static("60"))],
@@ -385,8 +440,9 @@ async fn require_auth(State(shell): State<Shell>, request: Request, next: Next) 
 
     if given.is_some() {
         // Wrong credentials (not the browser's first, header-less request):
-        // make guessing slow, and count it against the whole server.
-        shell.record_failed_login();
+        // make guessing slow, and count it against this client and the
+        // whole server.
+        shell.record_failed_login(client);
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
     if shell.oidc.is_none() {

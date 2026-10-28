@@ -81,9 +81,10 @@ pub trait ConnectionRepository: Send + Sync {
     async fn agent_access(&self, id: &str) -> Result<Option<AgentAccess>, RanchError>;
     /// Seal every connection as it stands: the first run with a key.
     async fn reseal_all(&self) -> Result<(), RanchError>;
-    /// Make every connection read-only for agents and locked, and seal it
-    /// so: what is left when the key of the seals was lost while seals
-    /// existed, and the values cannot be vouched for.
+    /// Make every connection read-only for agents and locked, and leave it
+    /// unsealed: what is left when the key of the seals was lost while
+    /// seals existed, and where a connection points cannot be vouched for.
+    /// `ranch-mcp` opens none of them until the user saves it again.
     async fn restrict_all(&self) -> Result<(), RanchError>;
     /// Seal again, with the endpoint, every connection whose seal from
     /// before the endpoint was sealed `verifier` finds valid; a connection
@@ -93,7 +94,9 @@ pub trait ConnectionRepository: Send + Sync {
     /// Save a new connection, placing it (creating a `New` group or
     /// environment). Its secrets are the caller's: the keychain is never
     /// asked while a write transaction is open (a keychain prompt would
-    /// hold every other writer).
+    /// hold every other writer). `insert`, `update` and `duplicate` fail
+    /// only before their commit: an error means nothing was saved, so the
+    /// caller may put the secrets back.
     async fn insert(&self, new: NewConnection) -> Result<Connection, RanchError>;
     async fn update(&self, edit: ConnectionEdit) -> Result<Connection, RanchError>;
     /// Copy a connection, its protections included, under `new_id` and the

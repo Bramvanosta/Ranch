@@ -69,11 +69,15 @@ fn resolve_app_data_dir() -> Result<std::path::PathBuf, Box<dyn std::error::Erro
 /// How often a running process checks that the app has not migrated the
 /// database since it started.
 const SCHEMA_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long the calls running may take to finish once the schema changed.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Stop when the app migrates the database under this process (an update):
-/// this code no longer knows its tables. The client reports the server
-/// gone, and the message (on stderr, in the client's logs) says to restart
-/// it.
+/// this code no longer knows its tables. No new call starts, the calls
+/// running finish (an approved write keeps its audit row), for
+/// [`STOP_GRACE`] at most, then the process exits. The client reports the
+/// server gone, and the message (on stderr, in the client's logs) says to
+/// restart it.
 fn watch_schema(pool: SqlitePool) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SCHEMA_CHECK_INTERVAL);
@@ -83,6 +87,7 @@ fn watch_schema(pool: SqlitePool) {
             if let Err(e) = sqlite::db::check_schema(&pool).await {
                 if matches!(e, ranch_lib::domain::errors::RanchError::Migration(_)) {
                     tracing::error!("{e}");
+                    ranch_lib::shells::mcp::calls::stop(STOP_GRACE).await;
                     std::process::exit(1);
                 }
                 tracing::warn!(error = %e, "could not check the database schema");

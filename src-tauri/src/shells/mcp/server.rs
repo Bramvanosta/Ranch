@@ -2153,6 +2153,13 @@ impl ServerHandler for RanchMcpServer {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResult, ErrorData> {
+        // Stopping (the app updated the database): no new call starts.
+        let Some(_call) = super::calls::begin() else {
+            return Err(ErrorData::internal_error(
+                "ranch-mcp is stopping: the Ranch app updated its database. Restart your agent client.",
+                None,
+            ));
+        };
         let started = std::time::Instant::now();
         let tool = request.name.to_string();
         let arguments = request.arguments.clone().map(serde_json::Value::Object);

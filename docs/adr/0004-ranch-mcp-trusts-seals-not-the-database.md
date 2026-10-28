@@ -12,5 +12,7 @@ The app seals, with an HMAC keyed by a secret in the OS keychain (its own entry,
 
 - Tampering with the database can only make `ranch-mcp` stricter, with one limit: a seal says the app wrote a value, not when. A copy of an older row, value and seal together, still verifies, so a process that saved one can put back a looser value the app sealed earlier (a connection before it was locked, AI before it was turned off). Closing this needs a counter the database cannot roll back, kept in the keychain and read on every check; the keychain prompts and round-trips that would add were judged too costly for a process that can already read the user's files. The user sees the restored value in Ranch, which reads the same row.
 - Every write path to a sealed value must seal it; the seal tests (`tests/mcp_integrity.rs`) cover them.
+- Seals are made with the key in memory, never by asking the keychain inside a write. A value the app wrote while it could not read the key is sealed later only if the row still holds it.
+- A lost key vouches for nothing: the app resets agent safety to its strictest values before creating a new key, and leaves every connection unsealed, so agents use none until the user saves it again (`tests/seals_recovery.rs`).
 - On Linux the Secret Service hands the key to any process of the user, as it does the Redis passwords: the guarantee is as strong as the keychain.
 - Debug builds started on a throwaway database (`RANCH_MCP_DATA_DIR`) skip seal checks, for tests.

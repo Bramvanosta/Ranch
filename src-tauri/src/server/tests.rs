@@ -177,8 +177,15 @@ async fn everything_but_healthz_needs_the_password() {
     assert_eq!(ok.status(), StatusCode::OK);
 }
 
+/// `request`, as sent from `ip`.
+fn from(ip: [u8; 4], mut request: Request<Body>) -> Request<Body> {
+    let addr = std::net::SocketAddr::from((ip, 50_000));
+    request.extensions_mut().insert(ConnectInfo(addr));
+    request
+}
+
 #[tokio::test]
-async fn too_many_wrong_passwords_close_basic_sign_in_for_everyone() {
+async fn too_many_wrong_passwords_close_basic_sign_in_for_that_client() {
     let dir = tempfile::tempdir().unwrap();
     let app = router(
         app_state(dir.path()).await,
@@ -187,30 +194,80 @@ async fn too_many_wrong_passwords_close_basic_sign_in_for_everyone() {
     // Many connections at once: the per-request delay alone would not slow
     // them down.
     let mut guesses = tokio::task::JoinSet::new();
-    for n in 0..MAX_FAILED_LOGINS {
+    for n in 0..MAX_FAILED_LOGINS_PER_CLIENT {
         let app = app.clone();
         guesses.spawn(async move {
             let guess = basic("ranch", &format!("guess-{n}"));
-            app.oneshot(invoke_request("list_groups", json!({}), Some(&guess)))
-                .await
-                .unwrap()
-                .status()
+            app.oneshot(from(
+                [203, 0, 113, 7],
+                invoke_request("list_groups", json!({}), Some(&guess)),
+            ))
+            .await
+            .unwrap()
+            .status()
         });
     }
     while let Some(status) = guesses.join_next().await {
         assert_eq!(status.unwrap(), StatusCode::UNAUTHORIZED);
     }
-    // The right password is not even checked until the window passes.
+    let right = Some(basic("ranch", "s3cret"));
+    // From that client, the right password is not even checked until the
+    // window passes.
+    let locked = app
+        .clone()
+        .oneshot(from(
+            [203, 0, 113, 7],
+            invoke_request("list_groups", json!({}), right.as_deref()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(locked.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(locked.headers()[header::RETRY_AFTER], "60");
+    // Another client signs in.
+    let other = app
+        .oneshot(from(
+            [198, 51, 100, 2],
+            invoke_request("list_groups", json!({}), right.as_deref()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(other.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn wrong_passwords_from_many_clients_close_basic_sign_in_for_everyone() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = router(
+        app_state(dir.path()).await,
+        &config(dir.path(), password_auth()),
+    );
+    let mut guesses = tokio::task::JoinSet::new();
+    for n in 0..MAX_FAILED_LOGINS {
+        let app = app.clone();
+        // A few guesses per address, under the per-client limit.
+        let ip = [10, 0, (n / 5) as u8, 1];
+        guesses.spawn(async move {
+            let guess = basic("ranch", &format!("guess-{n}"));
+            app.oneshot(from(
+                ip,
+                invoke_request("list_groups", json!({}), Some(&guess)),
+            ))
+            .await
+            .unwrap()
+            .status()
+        });
+    }
+    while let Some(status) = guesses.join_next().await {
+        assert_eq!(status.unwrap(), StatusCode::UNAUTHORIZED);
+    }
     let right = app
-        .oneshot(invoke_request(
-            "list_groups",
-            json!({}),
-            Some(&basic("ranch", "s3cret")),
+        .oneshot(from(
+            [198, 51, 100, 2],
+            invoke_request("list_groups", json!({}), Some(&basic("ranch", "s3cret"))),
         ))
         .await
         .unwrap();
     assert_eq!(right.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(right.headers()[header::RETRY_AFTER], "60");
 }
 
 #[tokio::test]

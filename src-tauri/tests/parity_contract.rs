@@ -26,7 +26,7 @@ fn the_counts_are_pinned() {
     // (installers, settings, approval and lock controls, windows, form
     // helpers) or MCP-forbidden (anything that would let an agent loosen
     // its own limits or read its own approval trail).
-    assert_eq!(OPERATIONS.len(), 97, "expected 97 UI commands");
+    assert_eq!(OPERATIONS.len(), 93, "expected 93 UI commands");
     assert_eq!(catalogue::tools().count(), 29, "expected 29 MCP tools");
 }
 

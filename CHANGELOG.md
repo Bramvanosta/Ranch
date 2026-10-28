@@ -123,7 +123,7 @@ Fast on a far Redis, and clearer everywhere. In short: **one connection per Redi
 - **A lock set in the app stops agent writes at once.** With approvals off, an agent's write is refused on a connection the app locked, even when the agent had used the connection before the lock.
 - The first launch after the update carries over the seals that still hold. A connection whose seal does not is refused to agents until you save it again in Ranch.
 - **An approval covers what you were shown.** Its seal also covers how the request was shown (connection, group, environment, color, preview): a request whose approval sheet another process rewrote runs nothing. A request still waiting when Ranch updates is refused once approved; the agent asks again.
-- **The key behind these seals has its own keychain entry**, apart from connection passwords, and moves there on first launch. If it goes missing, Ranch resets agent safety to its strictest settings (AI off, every connection locked and read-only for agents) and says so, instead of trusting the database as it finds it.
+- **The key behind these seals has its own keychain entry**, apart from connection passwords, copied there on first launch; the old entry is kept for one more release, so a `ranch-mcp` you already allowed keeps working while macOS asks about the new one. If the key goes missing, Ranch resets agent safety to its strictest settings (AI off, every connection locked and read-only for agents) and says so, instead of trusting the database as it finds it: save each connection again in Ranch to let agents use it.
 - **When its key cannot be read, `ranch-mcp` treats AI features as off** and shares job names only.
 - **With approval mode "Does anything on a connection", `annotate_cause` waits for approval too.** Listing connections and environments stays free.
 - **Every write refused by a connection's lock is in the audit log** as a failure, single or bulk, from the app or from an agent.
@@ -132,7 +132,7 @@ Fast on a far Redis, and clearer everywhere. In short: **one connection per Redi
 ### Security (connections and Ranch server)
 
 - **A saved Redis password is only reused over the same route**: same host, port, TLS and CA, through the same SSH bastion and jump host. Changing one asks for the password again.
-- **Ranch server refuses HTTP Basic sign-in to everyone for a minute after 20 wrong passwords**, however many clients send them.
+- **Ranch server refuses HTTP Basic sign-in for a minute to an address that sent 10 wrong passwords**, and to everyone past 200 from all addresses together. Behind a reverse proxy, clients share the proxy's address.
 - **Signing out of Ranch server revokes the session on the server**: a copy of its cookie no longer opens anything. Existing sessions sign in again once.
 - **The database is readable by its owner only** (`ranch.db` and its `-wal` and `-shm` files).
 
@@ -143,7 +143,7 @@ Fast on a far Redis, and clearer everywhere. In short: **one connection per Redi
 - **Ranch writes a log file** (`~/Library/Logs/dev.ranch.app/ranch.log` on macOS), crashes included.
 - **Concurrent writes from the app and agents wait their turn** instead of failing with "database is locked", approvals included.
 - **Saving a connection no longer holds the database while the keychain asks for permission.**
-- **Settings saved while the keychain was locked are protected as soon as it opens.**
+- **Settings saved while the keychain was locked are protected once it opens**, if nothing else changed them meanwhile; saving never waits on the keychain.
 - **Duplicating a connection keeps its pinned SSH host keys**; removing one also forgets the jump host's pin.
 - **The audit log shows the right environment color** after a connection is moved or its environment recolored, and one unreadable row no longer hides the page.
 

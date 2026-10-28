@@ -220,17 +220,36 @@ async fn backup(pool: &SqlitePool, db_path: &Path, found: i64) -> Result<(), Ran
         tracing::info!(?target, "a backup of this schema already exists; kept");
         return Ok(());
     }
-    let Some(target_text) = target.to_str() else {
+    // Written under another name, owner-only from the start (VACUUM INTO
+    // takes an empty file), then renamed: a copy cut short by a crash is
+    // never taken for the backup.
+    let mut partial = target.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    let Some(partial_text) = partial.to_str() else {
         return Err(RanchError::InvalidInput {
             reason: format!("cannot back up the database to {}", target.display()),
         });
     };
+    match std::fs::remove_file(&partial) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(RanchError::InvalidInput {
+                reason: format!("cannot clear {}: {e}", partial.display()),
+            })
+        }
+    }
+    create_private(&partial);
     sqlx::query("VACUUM INTO ?")
-        .bind(target_text)
+        .bind(partial_text)
         .execute(pool)
         .await
         .map_err(RanchError::database)?;
-    restrict_permissions(&target);
+    restrict_permissions(&partial);
+    std::fs::rename(&partial, &target).map_err(|e| RanchError::InvalidInput {
+        reason: format!("cannot keep the backup at {}: {e}", target.display()),
+    })?;
     tracing::info!(?target, "database backed up before migrating");
     Ok(())
 }

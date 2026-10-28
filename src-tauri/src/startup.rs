@@ -4,10 +4,13 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
 
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
+use crate::adapters::hmac_sealer::HmacSealer;
 use crate::adapters::sqlite::Db;
 use crate::app_state::AppState;
 use crate::application::ports::settings::SafetySetting;
@@ -320,20 +323,39 @@ const STRICT_SETTINGS: [(SafetySetting, Option<&str>); 5] = [
 /// The key of the seals is gone (its keychain entry deleted, another
 /// keychain) while the database holds seals made with it. Sealing the
 /// database as it is would vouch for whatever another process wrote in
-/// it: start from the strictest values instead, every connection locked
-/// and read-only for agents, and seal those.
+/// it. Run before a new key exists, and again at every launch until one
+/// does: the safety settings take their strictest values, unsealed (their
+/// old seals stay, and no longer hold), and every connection is locked,
+/// read-only for agents and unsealed, so `ranch-mcp` opens none until the
+/// user saves it again.
 pub async fn restrict_after_key_loss(state: &AppState) -> Result<(), RanchError> {
-    for (setting, value) in STRICT_SETTINGS {
-        match value {
-            Some(value) => state.settings.set(setting.key(), value).await?,
-            None => state.settings.remove(setting.key()).await?,
-        }
-    }
+    state.settings.write_unsealed(&STRICT_SETTINGS).await?;
     state.repository.restrict_all().await
 }
 
+/// Looks for the key of the seals in the background while the keychain
+/// cannot give it (locked at launch): after 30 s, then less and less often
+/// (up to every 15 min) so a keychain that stays locked is not asked all
+/// day. Sealing only ever uses the key in memory, so no write waits on the
+/// keychain.
+pub fn spawn_key_reload(sealer: Arc<HmacSealer>) {
+    tauri::async_runtime::spawn(async move {
+        let mut wait = Duration::from_secs(30);
+        loop {
+            tokio::time::sleep(wait).await;
+            let looking = Arc::clone(&sealer);
+            match tokio::task::spawn_blocking(move || looking.reload_if_missing()).await {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(e) => tracing::warn!(error = %e, "looking for the integrity key failed"),
+            }
+            wait = (wait * 2).min(Duration::from_secs(15 * 60));
+        }
+    });
+}
+
 pub const KEY_LOSS_TITLE: &str = "Ranch reset its agent safety settings";
-pub const KEY_LOSS_BODY: &str = "The key that protects them was missing from the keychain. AI features are off, and every connection is locked and read-only for agents until you change it.";
+pub const KEY_LOSS_BODY: &str = "The key that protects them was missing from the keychain. AI features are off, and every connection is locked and read-only for agents. Save each connection again in Ranch to let agents use it.";
 
 #[cfg(test)]
 mod tests {

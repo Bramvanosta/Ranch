@@ -66,7 +66,11 @@ pub fn ssh_jump_hostkey_keychain_name(connection_id: &str) -> String {
 /// Keychain entries changed for a save, so a save that fails can put them
 /// back. The keychain is never asked while a write transaction is open: a
 /// prompt there (macOS asks before a binary reads an item it did not
-/// create) would hold every other writer, the audit log included.
+/// create) would hold every other writer, the audit log included. The
+/// repository's writes fail only before their commit (nothing that can
+/// fail comes after it), so an error from one always means the row was
+/// not saved, and putting the secrets back never leaves a saved row with
+/// the old ones.
 struct SecretChanges<'a> {
     keychain: &'a dyn SecretStore,
     /// Each entry changed, with what it held before.
@@ -776,17 +780,17 @@ async fn save_connection_update(
     // for, over the same route. Pointing the connection at another host,
     // turning TLS off, or going through another CA or SSH bastion with the
     // old password kept would hand it to them at the next connect; another
-    // kind of backend is another server.
+    // kind of backend is another server. A keychain that cannot say whether
+    // a password is saved counts as one being there.
     let mut saved_had_tunnel = false;
     if let Some(saved) = connections.get(&args.id).await? {
         let same_server = saved.backend == backend && spec.same_server(&saved.endpoint, &endpoint);
         if args.password.is_none()
             && !same_server
-            && password_entry(&args.id)
-                .and_then(|entry| keychain.get(entry))
-                .ok()
-                .flatten()
-                .is_some()
+            && !matches!(
+                password_entry(&args.id).and_then(|entry| keychain.get(entry)),
+                Ok(None)
+            )
         {
             return Err(RanchError::InvalidInput {
                 reason: "The server, or the route to it (CA, SSH bastion), changed: enter the Redis password again (the saved one is only sent the way it was saved for)".to_string(),
@@ -801,11 +805,7 @@ async fn save_connection_update(
         if args.ssh_password.is_none()
             && uses_ssh_password(ssh_tunnel.as_ref())
             && !same_ssh_endpoint(saved_tunnel.as_ref(), ssh_tunnel.as_ref())
-            && keychain
-                .get(&ssh_keychain_name(&args.id))
-                .ok()
-                .flatten()
-                .is_some()
+            && !matches!(keychain.get(&ssh_keychain_name(&args.id)), Ok(None))
         {
             return Err(RanchError::InvalidInput {
                 reason: "The SSH bastion changed: enter the SSH password again (the saved one is only sent to the bastion it was saved for)".to_string(),

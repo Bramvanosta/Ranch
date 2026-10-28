@@ -107,63 +107,88 @@ pub fn run() {
 
             // The key that seals approvals, the agent safety settings and
             // the connections (`application::ports::sealer`), in its own
-            // keychain service. The run that creates it seals the state as
-            // it is, unless seals were already there: the key was lost, and
-            // the state cannot be vouched for, so it starts from the
-            // strictest values. A later run carries over the connection
-            // seals made before they covered the endpoint, those that still
-            // hold. A keychain that cannot be read now (locked) is asked
-            // again at the next seal; until then nothing is sealed, and
-            // ranch-mcp opens no connection.
+            // keychain service. None anywhere: the run that creates it
+            // seals the state as it is, unless seals were already there.
+            // Then the key was lost and the state cannot be vouched for:
+            // agent safety is reset to its strictest first, and the key is
+            // created only once that is done (a failed reset is tried again
+            // at the next launch). With a key, the connection seals made
+            // before they covered the endpoint, those that still hold, are
+            // carried over. A keychain that cannot be read now (locked) is
+            // asked again in the background; until then nothing is sealed,
+            // and ranch-mcp opens no connection. Nothing here stops the app.
             let integrity = adapters::secrets::OsKeychain::for_integrity_key();
-            let (key, created) = match adapters::hmac_sealer::load_or_create(&integrity, &keychain)
-            {
-                Ok((key, created)) => (Some(key), created),
-                Err(e) => {
-                    tracing::warn!(error = %e, "no integrity key: agents cannot write");
-                    (None, false)
-                }
-            };
-            let sealer = Arc::new(match key {
-                Some(key) => adapters::hmac_sealer::HmacSealer::for_app(Some(key)),
-                None => adapters::hmac_sealer::HmacSealer::for_app_reloading(Box::new(|| {
+            let found = adapters::hmac_sealer::load_for_app(&integrity, &keychain);
+            let sealer = Arc::new(adapters::hmac_sealer::HmacSealer::for_app_reloading(
+                Box::new(|| {
                     let integrity = adapters::secrets::OsKeychain::for_integrity_key();
                     let passwords = adapters::secrets::OsKeychain::new();
                     adapters::hmac_sealer::load(&integrity, &passwords)
                         .ok()
                         .flatten()
-                })),
-            });
-            let state = app_state::AppState::new(db, Arc::new(keychain), sealer);
-            if created && had_seals {
-                tracing::warn!(
-                    "integrity key missing while seals exist: agent safety reset to its strictest"
-                );
-                tauri::async_runtime::block_on(startup::restrict_after_key_loss(&state))?;
-                if let Err(e) = app
-                    .notification()
-                    .builder()
-                    .title(startup::KEY_LOSS_TITLE)
-                    .body(startup::KEY_LOSS_BODY)
-                    .show()
-                {
-                    tracing::warn!(error = %e, "could not show the safety reset notification");
-                }
-            } else if created {
-                tauri::async_runtime::block_on(async {
-                    state.settings.seal_all().await?;
-                    state.repository.reseal_all().await
-                })?;
-            } else if let Some(key) = key {
-                // Not fatal: a connection left unsealed is refused to agents,
-                // not to the user.
-                let verifier = adapters::hmac_sealer::HmacSealer::for_agents(Some(key));
-                match tauri::async_runtime::block_on(state.repository.upgrade_seals(&verifier)) {
-                    Ok(0) => {}
-                    Ok(upgraded) => {
-                        tracing::info!(upgraded, "connection seals now cover the endpoint")
+                }),
+            ));
+            let state = app_state::AppState::new(db, Arc::new(keychain), Arc::clone(&sealer));
+            match found {
+                Ok(Some(key)) => {
+                    sealer.install(key);
+                    // Not fatal: a connection left unsealed is refused to
+                    // agents, not to the user.
+                    let verifier = adapters::hmac_sealer::HmacSealer::for_agents(Some(key));
+                    match tauri::async_runtime::block_on(state.repository.upgrade_seals(&verifier))
+                    {
+                        Ok(0) => {}
+                        Ok(upgraded) => {
+                            tracing::info!(upgraded, "connection seals now cover the endpoint")
+                        }
+                        Err(e) => tracing::warn!(error = %e, "could not carry connection seals over"),
                     }
-                    Err(e) => tracing::warn!(error = %e, "could not carry connection seals over"),
+                }
+                Ok(None) if had_seals => {
+                    tracing::warn!(
+                        "integrity key missing while seals exist: agent safety reset to its strictest"
+                    );
+                    match tauri::async_runtime::block_on(startup::restrict_after_key_loss(&state)) {
+                        Ok(()) => {
+                            match adapters::hmac_sealer::create(&integrity) {
+                                Ok(key) => sealer.install(key),
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "could not create the integrity key: agents cannot write")
+                                }
+                            }
+                            if let Err(e) = app
+                                .notification()
+                                .builder()
+                                .title(startup::KEY_LOSS_TITLE)
+                                .body(startup::KEY_LOSS_BODY)
+                                .show()
+                            {
+                                tracing::warn!(error = %e, "could not show the safety reset notification");
+                            }
+                        }
+                        Err(e) => tracing::error!(
+                            error = %e,
+                            "could not reset agent safety: no integrity key is created, agents cannot write; tried again at the next launch"
+                        ),
+                    }
+                }
+                Ok(None) => match adapters::hmac_sealer::create(&integrity) {
+                    Ok(key) => {
+                        sealer.install(key);
+                        if let Err(e) = tauri::async_runtime::block_on(async {
+                            state.settings.seal_all().await?;
+                            state.repository.reseal_all().await
+                        }) {
+                            tracing::warn!(error = %e, "could not seal the agent safety state");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "could not create the integrity key: agents cannot write")
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot read the integrity key: agents cannot write until it can be read");
+                    startup::spawn_key_reload(Arc::clone(&sealer));
                 }
             }
 
