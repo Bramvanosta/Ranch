@@ -81,6 +81,10 @@
   },
   "bundle": {
     "active": true,
+    "category": "DeveloperTool",
+    "copyright": "© 2026 Bram van Osta",
+    "shortDescription": "Desktop client for BullMQ queues",
+    "longDescription": "Ranch inspects, retries and cleans up BullMQ jobs on Redis, keeps production locked until you unlock it, and lets AI agents help through a built-in MCP server whose writes wait for your approval.",
     "targets": "all",
     "createUpdaterArtifacts": true,
     "windows": {

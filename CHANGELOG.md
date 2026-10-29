@@ -83,6 +83,7 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 - **No status bar.** The version is in Ranch › About; an available update shows at the bottom of the sidebar and in Ranch › Check for Updates; pending agent approvals are the count on **Agents** and Agents › Pending Approvals (⌥⌘A).
 - **Destructive actions confirm in a sheet** at the top of the window: Drain, Clean, Retry all failed, removing jobs and removing a connection say what goes and what stays, with counts, and the button says how much (*Drain 400 jobs*). Cancel has the focus when something is deleted, so Enter no longer removes the selection. **On a locked production connection** these actions no longer need an unlock first: type the queue's name in the sheet and Ranch unlocks for that action only, then locks again; both are in the audit log.
 - **A new logo.** Three bars, the head of the queue sliding out of the line: in the app icon, the favicon, the welcome screens and the sidebar header of Ranch web and Ranch server, with the name set as `ranch` in JetBrains Mono. The small sizes (16 and 32 px) are redrawn on the pixel grid to stay sharp. The browser tab is titled just *Ranch*.
+- **The menu bar icon follows macOS.** It is a monochrome template image, white on a dark menu bar and black on a light one; its menu reads *Open Ranch* and *Quit Ranch*.
 
 ### Changed (keyboard shortcuts, breaking)
 
@@ -111,6 +112,10 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 - **One scroll per screen.** A connection's overview could scroll as a whole window *and* inside its view *and* inside Live events: screen-reader labels placed outside the scrolling view stretched the window, and Live events had its own scroll box. Views now contain what they position, the window never scrolls, and Live events shows its 12 newest lines.
 - **Every page uses the full width.** The connections page and Needs attention were centred in a narrower column (and Agents capped), unlike every other screen.
 - **The Map names worker pools usefully.** Workers without a name were grouped by host. In containers every client comes from the same gateway address, so they all became one "Unnamed workers on 192.168.…" pool. They are now grouped by the queue they serve ("cron workers"), and the pool's details say how to name them.
+
+### Fixed (window)
+
+- **Closing a window or a tab closes it.** A window opened with New Window or New Tab, and the Settings window, were hidden instead of closed and stayed in memory. Only the main window hides, so Ranch keeps running in the menu bar.
 
 ## [v0.2.0] - 2026-09-21
 
