@@ -128,7 +128,7 @@ pub fn run() {
                         .flatten()
                 }),
             ));
-            let state = app_state::AppState::new(db, Arc::new(keychain), Arc::clone(&sealer));
+            let state = app_state::AppState::new(db, Arc::new(keychain), sealer.clone());
             match found {
                 Ok(Some(key)) => {
                     sealer.install(key);
