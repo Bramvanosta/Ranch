@@ -3,10 +3,13 @@
 #  - tag push vX.Y.Z-rc.N  → pre-release
 # (The server image of the same tag is built by image.yml.)
 #
-# `release` creates the release first; the Linux and macOS jobs then build in
-# parallel, each attaching its own files and checksums (`gh release upload
-# --clobber`: a re-run replaces what it uploaded), then publishing its update
-# to the feed (scripts/publish-update.mjs, docs/releasing.md).
+# `release` checks that the tag is a commit of main whose CI passed, then
+# creates the release as a DRAFT: nobody sees it yet. The Linux and macOS jobs
+# build in parallel, each attaching its own files and checksums (`gh release
+# upload --clobber`: a re-run replaces what it uploaded). Once both are done,
+# `publish` makes the release public, publishes the updates to the feed
+# (scripts/publish-update.mjs, docs/releasing.md), one platform after the
+# other, and last updates the Homebrew tap, whose failure fails nothing else.
 #
 # Secrets (Settings → Secrets and variables → Actions), all optional:
 #  - TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD): signs the updater archives;
@@ -37,7 +40,13 @@ env:
 jobs:
   release:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Up to 25 minutes waiting for main's CI on the tagged commit.
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -46,6 +55,10 @@ jobs:
         id: version
         # The tag is the version; anything but vX.Y.Z or vX.Y.Z-<pre> stops the release here.
         run: node scripts/set-version.mjs "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+      - name: On main, with a green CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-release-commit.sh "$GITHUB_SHA"
       - name: Release notes
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -82,25 +95,26 @@ jobs:
             `docker pull ghcr.io/bramvanosta/ranch:${version}`,
             "```",
             "",
-            "The files below appear as each platform finishes building, each with its `SHA256SUMS-<platform>.txt`.",
+            "Each platform's files come with their `SHA256SUMS-<platform>.txt`.",
             `What changed: [CHANGELOG.md](${changelog}).`,
           ]
           console.log(lines.join("\n"))
           EOF
           cat notes.md
-      - name: Create the release
+      - name: Create the release (draft)
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
           set -eu
-          # A re-run updates the release instead of failing on it.
+          # A re-run updates the release instead of failing on it, and leaves
+          # it a draft or public as it is.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release edit "$GITHUB_REF_NAME" --title "Ranch $VERSION" \
               --notes-file notes.md --prerelease="$PRERELEASE"
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Ranch $VERSION" \
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "Ranch $VERSION" \
               --notes-file notes.md --prerelease="$PRERELEASE"
           fi
 
@@ -122,7 +136,10 @@ jobs:
             librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev pkg-config \
             file rpm xdg-utils
       - uses: ./.github/actions/pnpm
+      # rust-toolchain.toml's version, the one CI tested.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.99.1
       - name: Build the bundles
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -138,7 +155,8 @@ jobs:
           else
             CONFIG='{}'
           fi
-          pnpm tauri build --bundles deb,appimage --config "$CONFIG"
+          # `-- --locked`: cargo builds exactly Cargo.lock, as CI did.
+          pnpm tauri build --bundles deb,appimage --config "$CONFIG" -- --locked
           # RPM refuses a `-` in a version. A pre-release goes in the package's
           # release instead, Fedora's way: 0.4.0-rc.1 is version 0.4.0, release
           # 0.rc.1, which sorts before 0.4.0's release 1. Same binary.
@@ -161,20 +179,6 @@ jobs:
           cp $B/appimage/*.AppImage.sig out/ 2>/dev/null || true
           (cd out && sha256sum * > SHA256SUMS-linux.txt)
           gh release upload "$GITHUB_REF_NAME" out/* --clobber
-      # Auto-updates: the AppImage is what a Linux updater installs. No
-      # signature (no signing key), no update: the release stands without one.
-      - name: Publish the update
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -eu
-          B=src-tauri/target/release/bundle/appimage
-          if ! ls $B/*.AppImage.sig >/dev/null 2>&1; then
-            echo "no signature: update not published"; exit 0
-          fi
-          case "$(uname -m)" in x86_64) P=linux-x86_64 ;; aarch64) P=linux-aarch64 ;; *) echo "unknown arch"; exit 1 ;; esac
-          A=$(ls $B/*.AppImage | head -1)
-          node scripts/publish-update.mjs "$GITHUB_REF_NAME" --platforms "$P" --artifact "$A" --signature "$A.sig"
 
   macos:
     needs: release
@@ -185,8 +189,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/pnpm
+      # rust-toolchain.toml's version, the one CI tested.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: 1.99.1
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - name: Build the app
         env:
@@ -214,7 +220,8 @@ jobs:
           # In three steps. A universal build compiles both architectures but only
           # merges the MAIN binary into target/universal-apple-darwin; the bundle also
           # ships `ranch-mcp`, which the bundler then looks for there and does not find.
-          pnpm tauri build --target universal-apple-darwin --no-bundle --config "$CONFIG"
+          # `-- --locked`: cargo builds exactly Cargo.lock, as CI did.
+          pnpm tauri build --target universal-apple-darwin --no-bundle --config "$CONFIG" -- --locked
           T=src-tauri/target
           lipo -create -output "$T/universal-apple-darwin/release/ranch-mcp" \
             "$T/aarch64-apple-darwin/release/ranch-mcp" \
@@ -233,18 +240,79 @@ jobs:
           cp $B/macos/*.app.tar.gz $B/macos/*.app.tar.gz.sig out/ 2>/dev/null || true
           (cd out && shasum -a 256 * > SHA256SUMS-macos.txt)
           gh release upload "$GITHUB_REF_NAME" out/* --clobber
-      # Homebrew: the tap's cask follows the release, `ranch` for a stable
-      # version and `ranch@beta` for a pre-release (scripts/homebrew-cask.mjs).
-      # The deploy key may write to the tap and nothing else.
-      - name: Update the Homebrew tap
+
+  # Both platforms are attached: the release goes public, then the updates
+  # point at files that exist, then the tap.
+  publish:
+    needs: [release, linux, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Publish the release
         env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.release.outputs.prerelease }}
+        run: |
+          set -eu
+          if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" != true ]; then
+            echo "already public"; exit 0
+          fi
+          if [ "$PRERELEASE" = true ]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease
+          else
+            gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          fi
+      # Auto-updates: the AppImage is what a Linux updater installs, the
+      # universal app archive serves both Mac architectures. One job, one
+      # platform after the other: the manifest each run rebuilds from the
+      # platform files always has the platforms before it. No signature (no
+      # signing key), no update: the release stands without one. The archives
+      # are already attached; only their names are given here.
+      - name: Publish the updates
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir sig
+          gh release download "$GITHUB_REF_NAME" --dir sig --pattern '*.AppImage.sig' || true
+          gh release download "$GITHUB_REF_NAME" --dir sig --pattern '*.app.tar.gz.sig' || true
+          S=$(ls sig/*.AppImage.sig 2>/dev/null | head -1 || true)
+          if [ -n "$S" ]; then
+            # Built on an x86_64 runner (the linux job).
+            node scripts/publish-update.mjs "$GITHUB_REF_NAME" --platforms linux-x86_64 \
+              --artifact "${S%.sig}" --signature "$S"
+          else
+            echo "Linux: no signature, update not published"
+          fi
+          S=sig/Ranch.app.tar.gz.sig
+          if [ -f "$S" ]; then
+            node scripts/publish-update.mjs "$GITHUB_REF_NAME" --platforms darwin-aarch64,darwin-x86_64 \
+              --artifact "${S%.sig}" --signature "$S"
+          else
+            echo "macOS: no signature, update not published"
+          fi
+      # Homebrew: the tap's casks follow the release, `ranch` for a stable
+      # version and `ranch@beta` for every version (scripts/homebrew-cask.mjs).
+      # The deploy key may write to the tap and nothing else. Last, and its
+      # failure fails nothing: the release and the updates are already out.
+      - name: Update the Homebrew tap
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
           TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           set -eu
           if [ -z "${TAP_KEY:-}" ]; then
             echo "no HOMEBREW_TAP_DEPLOY_KEY: tap not updated"; exit 0
           fi
-          SHA=$(cd out && shasum -a 256 *.dmg | cut -d' ' -f1)
+          SHA=$(gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS-macos.txt --output - \
+            | awk '/\.dmg$/ { print $1 }')
+          [ "$(printf '%s\n' "$SHA" | wc -l)" -eq 1 ] && [ -n "$SHA" ] || {
+            echo "expected one .dmg in SHA256SUMS-macos.txt"; exit 1; }
           K="$RUNNER_TEMP/tap_key"
           printf '%s\n' "$TAP_KEY" > "$K" && chmod 600 "$K"
           # GitHub's published host key, pinned rather than trusted on first use.
@@ -255,19 +323,8 @@ jobs:
           cd "$RUNNER_TEMP/tap"
           git add Casks
           if git diff --cached --quiet; then
-            echo "cask unchanged"; exit 0
+            echo "casks unchanged"; exit 0
           fi
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -m "ranch ${GITHUB_REF_NAME#v}"
           git push
-      # Auto-updates: the universal app archive serves both Mac architectures.
-      - name: Publish the update
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -eu
-          A=src-tauri/target/universal-apple-darwin/release/bundle/macos/Ranch.app.tar.gz
-          if [ ! -f "$A.sig" ]; then
-            echo "no signature: update not published"; exit 0
-          fi
-          node scripts/publish-update.mjs "$GITHUB_REF_NAME" --platforms darwin-aarch64,darwin-x86_64 --artifact "$A" --signature "$A.sig"

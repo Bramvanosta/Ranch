@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(
             endpoints,
             &[serde_json::json!(
-                "https://github.com/Bramvanosta/ranch/releases/download/update-feed/latest.json"
+                "https://github.com/Bramvanosta/Ranch/releases/download/update-feed/latest.json"
             )]
         );
     }

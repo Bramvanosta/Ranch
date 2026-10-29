@@ -5,9 +5,8 @@
  * connection's are its kind's (`connection.backend`). Screens ask here and
  * nowhere else:
  *
- * - `useCapabilities(connectionId).can("schedules.pause")`, or
- *   `<IfCapable connectionId need="schedules.write">`: an action, a menu
- *   item or a tab the backend does not declare is absent, not disabled.
+ * - `useCapabilities(connectionId).can("schedules.pause")`: an action, a
+ *   menu item or a tab the backend does not declare is absent, not disabled.
  * - `useJobStates(connectionId)`: the states it keeps, each with its code,
  *   label and tone, for pills, state tabs and totals
  *   (`src/domain/jobStates.ts` has the pure helpers).
@@ -27,7 +26,6 @@
  */
 
 export { can, type Need } from "./descriptor"
-export { IfCapable } from "./IfCapable"
 export {
   type Capabilities,
   useCapabilities,

@@ -7,8 +7,8 @@
 //! 2. [`test_connection`]: have the backend of the endpoint's kind probe
 //!    it once (`BackendSpec::probe`), and return a structured outcome
 //!    (success+version OR a classified error).
-//! 3. [`add_connection`]: persist a connection: SQLite row + (optional)
-//!    keychain entry, with transactional rollback if either side fails.
+//! 3. [`add_connection`]: persist a connection: (optional) keychain entry,
+//!    then the SQLite row; the entry is taken back if the row is not saved.
 //! 4. [`list_connections`]: read joined connection rows for the sidebar.
 //!
 //! A connection is a backend kind and that backend's endpoint, a JSON
@@ -16,8 +16,8 @@
 //! each asks for), and the secrets travel beside it, to the keychain.
 //!
 //! Architecture invariants enforced here:
-//! - Credentials never land in SQLite: the `keychain_ref` column points at
-//!   the keychain entry whose name is the connection id.
+//! - Credentials never land in SQLite: a connection's password is the
+//!   keychain entry named after its id (`ports::secrets::password_entry`).
 //! - Commands 3 + 4 split a thin Tauri wrapper from a `_inner` async fn that
 //!   takes the `ConnectionRepository` and the keychain, so they're testable
 //!   without spinning up a Tauri runtime.
@@ -35,6 +35,7 @@ use crate::adapters::bullmq_redis::connection_actor::ConnectionRegistry;
 use crate::adapters::bullmq_redis::ssh_tunnel::ssh_keychain_name;
 use crate::app_state::AppState;
 use crate::application::ports::connections::{ConnectionEdit, NewConnection};
+use crate::application::ports::secrets::password_entry;
 use crate::application::ports::SecretStore;
 use crate::application::ports::{BackendSpecs, Backends, ConnectionRepository};
 use crate::commands::hierarchy::{EnvironmentSelector, GroupSelector};
@@ -50,11 +51,75 @@ use url::Url;
 
 /// Keychain entry name for the per-connection SSH
 /// host-key pin (TOFU model). Distinct from `{id}` (Redis password)
-/// and `{id}::ssh` (SSH password). `remove_connection` cleans this
-/// third entry; `duplicate_connection` does NOT carry it (each
-/// duplicate re-pins on first connect).
+/// and `{id}::ssh` (SSH password). `remove_connection` cleans it;
+/// `duplicate_connection` copies it: the copy reaches the same bastion,
+/// and trusting whatever answers its first connect would undo the pin.
 pub fn ssh_hostkey_keychain_name(connection_id: &str) -> String {
     format!("{connection_id}::ssh::hostkey")
+}
+
+/// The jump host's pin: the tunnel pins it as the connection `{id}::jump`.
+pub fn ssh_jump_hostkey_keychain_name(connection_id: &str) -> String {
+    ssh_hostkey_keychain_name(&format!("{connection_id}::jump"))
+}
+
+/// Keychain entries changed for a save, so a save that fails can put them
+/// back. The keychain is never asked while a write transaction is open: a
+/// prompt there (macOS asks before a binary reads an item it did not
+/// create) would hold every other writer, the audit log included. The
+/// repository's writes fail only before their commit (nothing that can
+/// fail comes after it), so an error from one always means the row was
+/// not saved, and putting the secrets back never leaves a saved row with
+/// the old ones.
+struct SecretChanges<'a> {
+    keychain: &'a dyn SecretStore,
+    /// Each entry changed, with what it held before.
+    before: Vec<(String, Option<String>)>,
+}
+
+impl<'a> SecretChanges<'a> {
+    fn new(keychain: &'a dyn SecretStore) -> Self {
+        Self {
+            keychain,
+            before: Vec::new(),
+        }
+    }
+
+    /// Write an entry nothing names yet (a new connection's).
+    fn create(&mut self, entry: String, secret: &str) -> Result<(), RanchError> {
+        self.keychain.set(&entry, secret)?;
+        self.before.push((entry, None));
+        Ok(())
+    }
+
+    /// Replace an entry, keeping what it held.
+    fn replace(&mut self, entry: String, secret: &str) -> Result<(), RanchError> {
+        let previous = self.keychain.get(&entry)?;
+        self.keychain.set(&entry, secret)?;
+        self.before.push((entry, previous));
+        Ok(())
+    }
+
+    /// Forget an entry, keeping what it held.
+    fn delete(&mut self, entry: String) -> Result<(), RanchError> {
+        let previous = self.keychain.get(&entry)?;
+        self.keychain.delete(&entry)?;
+        self.before.push((entry, previous));
+        Ok(())
+    }
+
+    /// Put every entry back as it was, the last change first. Best effort.
+    fn undo(self) {
+        for (entry, previous) in self.before.into_iter().rev() {
+            let restored = match &previous {
+                Some(secret) => self.keychain.set(&entry, secret),
+                None => self.keychain.delete(&entry),
+            };
+            if let Err(e) = restored {
+                tracing::warn!(error = %e, entry = %entry, "could not restore a keychain entry after a failed save");
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -223,7 +288,7 @@ fn uses_ssh_password(tunnel: Option<&ssh_config::SshTunnelConfig>) -> bool {
 }
 
 /// Fill a blank password from the keychain of the connection being edited
-/// (keychain ref = connection id), so a test does not fail for a password
+/// (the entry named after its id), so a test does not fail for a password
 /// the form never shows, but **only when the test targets the server the
 /// password was saved for**, as the backend of the saved connection judges
 /// it. Otherwise the renderer (or, on Ranch server, any signed-in user)
@@ -248,7 +313,9 @@ fn with_saved_secrets(
     }
     let new = Endpoint::new(args.endpoint.clone());
     if args.password.is_none() && spec.same_server(&saved.endpoint, &new) {
-        args.password = keychain.get(&id).unwrap_or(None);
+        args.password = password_entry(&id)
+            .and_then(|entry| keychain.get(entry))
+            .unwrap_or(None);
     }
     let tunnel = spec.tunnel(&new);
     if uses_ssh_password(tunnel.as_ref())
@@ -388,42 +455,62 @@ pub async fn add_connection_inner(
 
     let connection_id = uuid::Uuid::now_v7().to_string();
 
-    // The secrets are stored after the row is written and before it is
-    // committed: if the keychain refuses, the row (and any group or
-    // environment created for it) is rolled back, so no connection points
-    // at a missing key.
-    let store_secrets = || -> Result<(), RanchError> {
-        if let Some(password) = &args.password {
-            keychain.set(&connection_id, password)?;
-        }
-        // SSH password (separate keychain entry at `{id}::ssh`). Only
-        // stored when (a) SSH tunnel is enabled AND (b) auth method is
-        // password-based AND (c) a non-empty password is supplied.
-        // Otherwise the entry is omitted (key-file or agent auth; the
-        // runtime resolves the credential at use time).
-        if let Some(secret) = &args.ssh_password {
-            if uses_ssh_password(ssh_tunnel.as_ref()) && !secret.is_empty() {
-                keychain.set(&ssh_keychain_name(&connection_id), secret)?;
-            }
-        }
-        Ok(())
-    };
+    // The secrets go to the keychain first, under the new id that no row
+    // names yet; if the row (and any group or environment created for it)
+    // cannot be saved, they are taken back. No connection points at a
+    // missing key, and no write transaction waits on the keychain.
+    let mut changes = SecretChanges::new(keychain.as_ref());
+    let stored = store_new_secrets(
+        &mut changes,
+        &connection_id,
+        args.password.as_deref(),
+        args.ssh_password.as_deref(),
+        ssh_tunnel.as_ref(),
+    );
+    if let Err(e) = stored {
+        changes.undo();
+        return Err(e);
+    }
 
-    connections
-        .insert(
-            NewConnection {
-                id: connection_id.clone(),
-                name: args.name.clone(),
-                backend,
-                endpoint,
-                group: args.group.clone().into(),
-                environment: args.environment.clone().into(),
-                locked: args.locked,
-            },
-            &store_secrets,
-        )
-        .await
-        .map(Into::into)
+    let saved = connections
+        .insert(NewConnection {
+            id: connection_id.clone(),
+            name: args.name.clone(),
+            backend,
+            endpoint,
+            group: args.group.clone().into(),
+            environment: args.environment.clone().into(),
+            locked: args.locked,
+        })
+        .await;
+    match saved {
+        Ok(connection) => Ok(connection.into()),
+        Err(e) => {
+            changes.undo();
+            Err(e)
+        }
+    }
+}
+
+/// A new connection's secrets. The SSH password (its own entry, at
+/// `{id}::ssh`) is stored only when the tunnel logs in with a password and
+/// one is given; key-file or agent auth resolves its credential at use time.
+fn store_new_secrets(
+    changes: &mut SecretChanges<'_>,
+    connection_id: &str,
+    password: Option<&str>,
+    ssh_password: Option<&str>,
+    ssh_tunnel: Option<&ssh_config::SshTunnelConfig>,
+) -> Result<(), RanchError> {
+    if let Some(password) = password {
+        changes.create(password_entry(connection_id)?.to_string(), password)?;
+    }
+    if let Some(secret) = ssh_password {
+        if uses_ssh_password(ssh_tunnel) && !secret.is_empty() {
+            changes.create(ssh_keychain_name(connection_id), secret)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "desktop")]
@@ -690,18 +777,23 @@ async fn save_connection_update(
     let ssh_tunnel = spec.tunnel(&endpoint);
 
     // "Leave blank to keep" keeps a password for the server it was saved
-    // for. Pointing the connection at another host (or turning TLS off) with
-    // the old password kept would hand it to that host at the next connect;
-    // another kind of backend is another server.
+    // for, over the same route. Pointing the connection at another host,
+    // turning TLS off, or going through another CA or SSH bastion with the
+    // old password kept would hand it to them at the next connect; another
+    // kind of backend is another server. A keychain that cannot say whether
+    // a password is saved counts as one being there.
     let mut saved_had_tunnel = false;
     if let Some(saved) = connections.get(&args.id).await? {
         let same_server = saved.backend == backend && spec.same_server(&saved.endpoint, &endpoint);
         if args.password.is_none()
             && !same_server
-            && keychain.get(&args.id).ok().flatten().is_some()
+            && !matches!(
+                password_entry(&args.id).and_then(|entry| keychain.get(entry)),
+                Ok(None)
+            )
         {
             return Err(RanchError::InvalidInput {
-                reason: "The server changed: enter the Redis password again (the saved one is only sent to the server it was saved for)".to_string(),
+                reason: "The server, or the route to it (CA, SSH bastion), changed: enter the Redis password again (the saved one is only sent the way it was saved for)".to_string(),
             });
         }
         let saved_tunnel = if saved.backend == backend {
@@ -713,11 +805,7 @@ async fn save_connection_update(
         if args.ssh_password.is_none()
             && uses_ssh_password(ssh_tunnel.as_ref())
             && !same_ssh_endpoint(saved_tunnel.as_ref(), ssh_tunnel.as_ref())
-            && keychain
-                .get(&ssh_keychain_name(&args.id))
-                .ok()
-                .flatten()
-                .is_some()
+            && !matches!(keychain.get(&ssh_keychain_name(&args.id)), Ok(None))
         {
             return Err(RanchError::InvalidInput {
                 reason: "The SSH bastion changed: enter the SSH password again (the saved one is only sent to the bastion it was saved for)".to_string(),
@@ -725,54 +813,65 @@ async fn save_connection_update(
         }
     }
 
-    // Runs inside the edit's transaction: a keychain failure rolls the
-    // edit back, as it does when a connection is added.
-    let store_secrets = || -> Result<(), RanchError> {
-        // Conditional keychain update: None means leave alone. Failure aborts
-        // the tx (same rollback semantics as add_connection).
-        if let Some(pw) = &args.password {
-            keychain.set(&args.id, pw)?;
-        }
+    // The secrets change first, outside any write transaction; a failed
+    // edit puts them back as they were, as a failed add takes them back.
+    let mut changes = SecretChanges::new(keychain.as_ref());
+    let stored = update_secrets(&mut changes, &args, ssh_tunnel.as_ref(), saved_had_tunnel);
+    if let Err(e) = stored {
+        changes.undo();
+        return Err(e);
+    }
 
-        // SSH password update / cleanup. The endpoint decides:
-        //   1. A password tunnel and `ssh_password.is_some()` → set the
-        //      entry (rotation / new password); `None` keeps it.
-        //   2. A key-file tunnel → delete the entry (orphan cleanup).
-        //   3. The saved tunnel removed → delete the entry.
-        let ssh_kc = ssh_keychain_name(&args.id);
-        if uses_ssh_password(ssh_tunnel.as_ref()) {
-            if let Some(pw) = &args.ssh_password {
-                keychain.set(&ssh_kc, pw)?;
-            }
-        } else if ssh_tunnel.is_some() || saved_had_tunnel {
-            if let Err(e) = keychain.delete(&ssh_kc) {
-                // Warn but proceed on KeychainUnavailable (matches
-                // remove_connection's pattern).
-                if let RanchError::KeychainUnavailable { .. } = &e {
-                    tracing::warn!(error = %e, connection_id = %args.id, "keychain unavailable while clearing SSH password; proceeding");
-                } else {
-                    return Err(e);
-                }
-            }
+    let saved = connections
+        .update(ConnectionEdit {
+            id: args.id.clone(),
+            name: args.name.clone(),
+            backend,
+            endpoint,
+            group: args.group.clone().into(),
+            environment: args.environment.clone().into(),
+            locked: args.locked,
+        })
+        .await;
+    match saved {
+        Ok(connection) => Ok(connection.into()),
+        Err(e) => {
+            changes.undo();
+            Err(e)
         }
-        Ok(())
-    };
+    }
+}
 
-    connections
-        .update(
-            ConnectionEdit {
-                id: args.id.clone(),
-                name: args.name.clone(),
-                backend,
-                endpoint,
-                group: args.group.clone().into(),
-                environment: args.environment.clone().into(),
-                locked: args.locked,
-            },
-            &store_secrets,
-        )
-        .await
-        .map(Into::into)
+/// An edit's secrets: `None` leaves a password alone. The SSH password
+/// follows the endpoint:
+///   1. A password tunnel and `ssh_password.is_some()` → set the entry
+///      (rotation / new password); `None` keeps it.
+///   2. A key-file tunnel → delete the entry (orphan cleanup).
+///   3. The saved tunnel removed → delete the entry.
+fn update_secrets(
+    changes: &mut SecretChanges<'_>,
+    args: &UpdateConnectionArgs,
+    ssh_tunnel: Option<&ssh_config::SshTunnelConfig>,
+    saved_had_tunnel: bool,
+) -> Result<(), RanchError> {
+    if let Some(pw) = &args.password {
+        changes.replace(password_entry(&args.id)?.to_string(), pw)?;
+    }
+    let ssh_kc = ssh_keychain_name(&args.id);
+    if uses_ssh_password(ssh_tunnel) {
+        if let Some(pw) = &args.ssh_password {
+            changes.replace(ssh_kc, pw)?;
+        }
+    } else if ssh_tunnel.is_some() || saved_had_tunnel {
+        match changes.delete(ssh_kc) {
+            // Warn but proceed (matches remove_connection's pattern).
+            Err(e @ RanchError::KeychainUnavailable { .. }) => {
+                tracing::warn!(error = %e, connection_id = %args.id, "keychain unavailable while clearing SSH password; proceeding");
+            }
+            other => other?,
+        }
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -803,21 +902,51 @@ pub async fn duplicate_connection_inner(
     keychain: &Arc<dyn SecretStore>,
 ) -> Result<Connection, RanchError> {
     let new_id = uuid::Uuid::now_v7().to_string();
-    // Inside the copy's transaction: the credential and the SSH password go
-    // to new keychain entries, each skipped when the source had none.
-    let copy_secrets = |source_keychain_ref: &str| -> Result<(), RanchError> {
-        if let Some(secret) = keychain.get(source_keychain_ref)? {
-            keychain.set(&new_id, &secret)?;
+    // Before the copy's transaction, as for an add: the credential, the SSH
+    // password and the host-key pins go to new keychain entries, each
+    // skipped when the source had none, and are taken back if the copy
+    // cannot be saved.
+    let mut changes = SecretChanges::new(keychain.as_ref());
+    if let Err(e) = copy_secrets(&mut changes, source_id, &new_id) {
+        changes.undo();
+        return Err(e);
+    }
+    match connections.duplicate(source_id, &new_id).await {
+        Ok(connection) => Ok(connection.into()),
+        Err(e) => {
+            changes.undo();
+            Err(e)
         }
-        if let Some(secret) = keychain.get(&ssh_keychain_name(source_id))? {
-            keychain.set(&ssh_keychain_name(&new_id), &secret)?;
+    }
+}
+
+/// A connection's keychain entries, under a copy's id.
+fn copy_secrets(
+    changes: &mut SecretChanges<'_>,
+    source_id: &str,
+    new_id: &str,
+) -> Result<(), RanchError> {
+    let entries = [
+        (
+            password_entry(source_id)?.to_string(),
+            password_entry(new_id)?.to_string(),
+        ),
+        (ssh_keychain_name(source_id), ssh_keychain_name(new_id)),
+        (
+            ssh_hostkey_keychain_name(source_id),
+            ssh_hostkey_keychain_name(new_id),
+        ),
+        (
+            ssh_jump_hostkey_keychain_name(source_id),
+            ssh_jump_hostkey_keychain_name(new_id),
+        ),
+    ];
+    for (from, to) in entries {
+        if let Some(secret) = changes.keychain.get(&from)? {
+            changes.create(to, &secret)?;
         }
-        Ok(())
-    };
-    connections
-        .duplicate(source_id, &new_id, &copy_secrets)
-        .await
-        .map(Into::into)
+    }
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -847,27 +976,30 @@ pub async fn remove_connection_inner(
     keychain: &Arc<dyn SecretStore>,
     registry: Option<&ConnectionRegistry>,
 ) -> Result<(), RanchError> {
-    let keychain_ref = connections
-        .keychain_ref(id)
-        .await?
-        .ok_or_else(|| RanchError::ConnectionNotFound { id: id.to_string() })?;
+    if connections.get(id).await?.is_none() {
+        return Err(RanchError::ConnectionNotFound { id: id.to_string() });
+    }
+    let password = password_entry(id)?;
 
     // Delete keychain entries FIRST. Rationale: leaking a stale credential in
     // the keychain is preferable to leaving a row pointing at a missing one
     // (which would surface as KeychainUnavailable on every read).
     //
-    // Clean up THREE entries:
+    // Clean up FOUR entries:
     //   1. Redis password at `{id}`.
     //   2. SSH password at `{id}::ssh`.
     //   3. SSH hostkey pin at `{id}::ssh::hostkey`.
+    //   4. The jump host's pin.
     // Each delete is independent: if one fails with KeychainUnavailable we log
     // + continue (matches the `remove_connection` pattern).
     let ssh_kc = ssh_keychain_name(id);
     let ssh_hostkey_kc = ssh_hostkey_keychain_name(id);
+    let jump_hostkey_kc = ssh_jump_hostkey_keychain_name(id);
     for entry_name in [
-        keychain_ref.as_str(),
+        password,
         ssh_kc.as_str(),
         ssh_hostkey_kc.as_str(),
+        jump_hostkey_kc.as_str(),
     ] {
         if let Err(e) = keychain.delete(entry_name) {
             if let RanchError::KeychainUnavailable { .. } = &e {

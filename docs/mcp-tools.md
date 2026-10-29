@@ -52,7 +52,7 @@ intentionally UI-only.
 |---|---|
 | `list_connections` | Every saved connection, each with its `groupId` / `groupName`, `environmentId` / `envLabel` / `envColor`, `backend` (the kind of queue system: `bullmq-redis`), `endpoint` (where it points, in one line and without credentials: `redis://host:6379/0`, `rediss://` with TLS, "via SSH" through a tunnel) and `mcpReadonly`. |
 | `list_environments` | Every environment (e.g. local, staging, production) in sidebar order, each with its `groupId` / `groupName`, typically one group per project, one environment per stage. |
-| `list_queues` | BullMQ queues on a connection, each with its `id` (what the other tools take as `queueId`), its `name`, `isPaused` and `counts`: jobs per state code (`{"waiting": 12, "failed": 3, …}`); a state that is absent holds no job. |
+| `list_queues` | BullMQ queues on a connection, each with its `id` (what the other tools take as `queueId`), its `name`, `isPaused` and `counts`: jobs per state code (`{"waiting": 12, "failed": 3, …}`); a state that is absent was not counted (BullMQ's `waitingChildren`): list its jobs with `list_jobs` to know. |
 | `list_jobs` | Paginated job list per `(queue, state)`; `state` is one of the codes its schema lists (`waiting`, `active`, `completed`, `failed`, `delayed`, `paused`, and BullMQ's `prioritized`, `waitingChildren`, `stalled`). Optional `search` (job id or name), `reason` (failure reason), `sortBy` (`name` \| `queuedAt` \| `duration`) + `sortDescending` run across the whole state (the newest 10,000 jobs), not just the returned page; `total` is then the number of matching jobs and `scanCapped` says whether older jobs were left out. Jobs carry `progress` (raw JSON of `job.updateProgress()`). Rows are **summaries** (see below). |
 | `inspect_job` | Everything about one job: payload, options, return value, progress, the whole `failedReason` and its stacktraces. BullMQ keeps one trace per attempt; identical ones are returned once, and `stacktraceIdenticalAttempts` says how many attempts produced it. |
 | `list_failed_jobs` | **Everything that failed on a connection, across all its queues**, newest first: the jobs (paged, `limit` ≤ 250), per-queue counts, and the most failing job types. Optional filters `queue` (a queue's name), `name` (a job name, exact), `reason` (substring). Looks at the newest 500 failed jobs per queue: "what failed on staging?" is one call. |
@@ -65,7 +65,9 @@ intentionally UI-only.
 | `list_failure_causes` | The failures of a connection (optional `queue`, by name) **grouped by cause** (the reason with its values replaced, as the Failed tab shows them), most frequent first: per cause its `signature`, a sample reason, the count, first and last time, job names, queues, up to 20 of its jobs, and `noted` when a note already explains it. The signature is the key for `annotate_cause`. |
 
 With approval mode `all`, the eleven read tools that target a connection are
-held like writes; `list_connections` and `list_environments` always stay free.
+held like writes, and so is `annotate_cause`; `list_connections` and
+`list_environments` always stay free: they open no connection, return no queue
+data, and an agent needs them to name anything.
 
 #### A list is for choosing, `inspect_job` is for reading
 
@@ -112,9 +114,9 @@ is passed through as the string it is, never dropped.
 | `clean_queue` | Remove the `completed` or `failed` jobs (`state`) that finished more than `olderThanMs` ago (`0` = all). Members of a flow are left in place. Cannot be undone. |
 | `pause_queue` / `resume_queue` | Stop / restart job pickup on a queue. Idempotent. |
 | `pause_scheduler` / `resume_scheduler` | Stop / restart one scheduler (`schedulerKey` from `list_schedulers`). Pausing removes its pending job (nothing fires) and keeps it listed, flagged `paused`; resuming re-arms it from its stored settings. |
-| `upsert_scheduler` | Create a job scheduler, or change an existing one (same `schedulerId`): `jobName` + either a cron `pattern` (5 fields, or 6 with seconds first; numbers, `*`, lists, ranges, steps, month / weekday names; optional IANA `tz`) **or** `everyMs` (≥ 1000), and an optional JSON `data` template. Returns `nextRunMs` and the pending job's id. The approval shows the schedule, the next run and the template; an invalid pattern or timezone is refused before anyone is asked. |
+| `upsert_scheduler` | Create a job scheduler, or change an existing one (same `schedulerId`): `jobName` + either a cron `pattern` (5 fields, or 6 with seconds first; numbers, `*`, lists, ranges, steps, month / weekday names; optional IANA `tz`, stored as UTC when omitted so the workers do not read it in their own local time) **or** `everyMs` (≥ 1000), and an optional JSON `data` template. Returns `nextRunMs` and the pending job's id. The approval shows the schedule, the next run and the template; an invalid pattern or timezone is refused before anyone is asked. |
 | `remove_scheduler` | Delete a job scheduler and its pending job. A job of it that is running finishes; nothing further is produced. |
-| `annotate_cause` | Attach a **resolution note** to a failure cause: `queueId` (of one of the cause's jobs) and, optionally, its `queue` name to show with the note, `signature` (from `list_failure_causes`), `text` (what is wrong, ≤ 4,000 characters), `steps` (what to do, ≤ 20), `jobsRead`. Shown next to the cause in Ranch and under Agents › Notes, with the agent client and the time. **No approval**: a note changes no queue state; it is refused on a connection read-only for agents and, like every tool, when AI features are off. |
+| `annotate_cause` | Attach a **resolution note** to a failure cause: `queueId` (of one of the cause's jobs) and, optionally, its `queue` name to show with the note, `signature` (from `list_failure_causes`), `text` (what is wrong, ≤ 4,000 characters), `steps` (what to do, ≤ 20), `jobsRead`. Shown next to the cause in Ranch and under Agents › Notes, with the agent client and the time. The `queue` name is kept only when it is one line of at most 200 characters, the `queueId` otherwise. **No approval** (a note changes no queue state) unless the approval mode is `all`; it is refused on a connection read-only for agents and, like every tool, when AI features are off. |
 | `add_job` | Enqueue a job on an **existing** queue: `name`, `data` (any JSON), optional `delayMs`, `attempts`, `priority` (1 = highest), `lifo`. Returns `jobId` and the `state` it landed in (`waiting`, `paused`, `delayed`, `prioritized`). The approval preview shows the queue, the name, the options and the whole payload. An invalid job or an unknown queue is refused before anyone is asked. |
 
 **One call = one approval.** That is why the bulk tools exist on this surface:
@@ -192,7 +194,9 @@ With AI features on, reads are free. Writes are checked in this order:
    that error directly: the human is never asked about something that cannot
    work.
 3. **Session lock**, only reached when no approval was needed
-   (mode `off`): a locked connection rejects the call with `connectionLocked`.
+   (mode `off`): a locked connection rejects the call with `connectionLocked`,
+   and the refused attempt is recorded in the audit log as a failure, as a
+   refused UI write is.
    **An approved call runs even on a locked connection**: the approval is the
    explicit human gesture, valid for that single operation, recorded in the
    audit log with its `approvalId`.
@@ -200,17 +204,24 @@ With AI features on, reads are free. Writes are checked in this order:
 ### How an approval is enforced
 
 An approval is valid once, for the connection, the tool and the arguments the
-human was shown: Ranch runs the call only when its own seal over that decision
-matches the call `ranch-mcp` holds, and spends the approval as it runs. A
+human was shown, and for how they were shown (the connection's name, group,
+environment and color on the sheet, and the preview): Ranch runs the call only
+when its own seal over that decision matches the call `ranch-mcp` holds and
+what it wrote for the sheet, and spends the approval as it runs. A request
+whose sheet was rewritten before the human decided runs nothing. A request
+still waiting while Ranch is updated is refused once approved; the agent asks
+again. A
 forged id, a pending, denied or expired request, a replay, or an approval for
 another connection or tool fails with `approvalInvalid`, and never falls back
 to "then check the lock instead". Undecided requests older than one hour are
 purged.
 
-The safety settings and each connection's read-only flag and lock are sealed
-the same way, and a value without the app's seal counts as its strictest
-setting. A process that edits Ranch's database (an agent with a shell, say)
-approves nothing and opens nothing (on Linux, where the Secret Service gives
+The safety settings and each connection's read-only flag, lock and endpoint
+are sealed the same way, and a value without the app's seal counts as its
+strictest setting; a connection whose seal does not hold is not opened at all,
+reads included (`connectionUnverified`). A process that edits Ranch's database
+(an agent with a shell, say) approves nothing, opens nothing and redirects
+nothing (on Linux, where the Secret Service gives
 the key to any process of the user, this holds only as far as the keychain
 does).
 
@@ -244,6 +255,7 @@ human-readable `message`, so an agent can branch without parsing prose:
 | `approvalInvalid` | The approval does not authorize this call. | Do not retry the same call without a new approval. |
 | `hostUnavailable` | The Ranch app is not running. | Ask the user to open Ranch. |
 | `connectionLocked` | The connection is locked and no approval was needed (approval mode `off`). | Ask the user to unlock it in Ranch. |
+| `connectionUnverified` | Ranch cannot vouch for the connection's settings: the app did not save them as they stand. Reads are refused too. | Ask the user to check the connection in Ranch and save it. |
 | `unsupported` | The connection's backend does not provide this, named in the message. | Use another tool or tell the user. |
 | `connectionNotFound`, `jobNotFound`, `schedulerNotFound` | The id does not name anything (anymore). | List again. |
 | `invalidJobState` | The job is not in a state the action applies to (retrying a job that has not failed). | Read the job again. |

@@ -19,10 +19,9 @@ import { Screen } from "@/layouts/Screen"
 /**
  * Extended tab vocabulary:
  *   - `result` shows the job's `returnValue` for completed jobs.
- *   - `stats` is the new name for what used to be `attempts`.
- * Legacy `attempts` deep links keep working: the URL value is
- * accepted by the schema and normalized to `stats` inside the
- * `JobDrillDown` component.
+ *   - `stats` shows the attempts.
+ * `attempts` deep links open `stats`: the URL value is accepted by the
+ * schema and normalized inside the `JobDrillDown` component.
  */
 // Trace, data, error, logs, raw, flow; the older names
 // still open (JobDrillDown maps them).

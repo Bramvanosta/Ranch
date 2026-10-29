@@ -45,7 +45,10 @@ export function useQueueMenu(connectionId: string, queue: Queue) {
     ...(can("maintenance.retryAllFailed")
       ? [{ label: "Retry All Failed…", run: () => setKind("retryAllFailed") }]
       : []),
-    ...(can("maintenance.clean") ? [{ label: "Clean…", run: () => setKind("clean") }] : []),
+    // Clean removes jobs for good: red, like its sheet.
+    ...(can("maintenance.clean")
+      ? [{ label: "Clean…", danger: true, run: () => setKind("clean") }]
+      : []),
     ...(can("maintenance.drain")
       ? [{ label: "Drain…", danger: true, run: () => setKind("drain") }]
       : []),

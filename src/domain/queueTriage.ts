@@ -11,7 +11,8 @@ import type { JobStateInfo, Queue } from "@/lib/tauri/bindings"
  *
  * Problems come first, worst kind first, then by how many jobs they concern;
  * every other queue folds into "+ N more queues", by name. The jobs waiting
- * are those in the states the backend describes as waiting (`inLine`).
+ * are those in the states the backend describes as waiting (`inLine`), and,
+ * for a paused queue, those its pause holds.
  */
 export type QueueProblem = "failed" | "paused" | "noWorker"
 
@@ -36,7 +37,7 @@ export function problemOf(
 ): Omit<TriagedQueue, "queue"> | null {
   const failed = countOf(queue.counts, "failed")
   if (failed > 0) return { problem: "failed", count: failed }
-  const waiting = inLine(queue.counts, states)
+  const waiting = inLine(queue.counts, states, queue.isPaused)
   if (queue.isPaused) return { problem: "paused", count: waiting }
   const attached = workers?.get(queue.id)
   if (attached === 0 && waiting > 0) return { problem: "noWorker", count: waiting }

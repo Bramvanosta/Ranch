@@ -1,4 +1,4 @@
-import { notStartedStates, stateList } from "@/domain/jobStates"
+import { notStartedStates, stateLabel, stateList } from "@/domain/jobStates"
 import { agentLabel } from "@/features/mcp/agentLabel"
 import type { JobStateInfo, PendingApproval } from "@/lib/tauri/bindings"
 
@@ -147,7 +147,7 @@ export function describeMaintenanceScope(
   }
   if (op?.kind === "clean") {
     const age = op.olderThanMs ?? 0
-    const state = op.state ?? "finished"
+    const state = op.state ? stateLabel(op.state, states).toLowerCase() : "finished"
     if (age === 0) return `every ${state} job`
     const hours = age / 3_600_000
     const span =

@@ -3,28 +3,34 @@
 //
 //   node scripts/homebrew-cask.mjs v0.4.0 --sha256 <dmg sha256> --tap ./homebrew-tap
 //
-// A stable version goes to `Casks/ranch.rb`, a pre-release to
-// `Casks/ranch@beta.rb`: `brew install --cask bramvanosta/tap/ranch` follows
-// stable releases only. Both install the universal DMG of the GitHub release.
-import { mkdirSync, writeFileSync } from "node:fs"
+// `Casks/ranch.rb` follows stable versions only; `Casks/ranch@beta.rb`
+// follows every version, release candidates and stable ones alike, so a beta
+// install never stays behind the stable release. Both install the universal
+// DMG of the GitHub release. A cask is never moved back to an older version
+// (a re-run of an old tag leaves it alone).
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { compareVersions } from "./publish-update.mjs"
+
 const REPO = "Bramvanosta/Ranch"
 
-/** The cask's file name and content for one version. */
-export function buildCask({ version, sha256 }) {
+/** One cask's file name and content: `ranch@beta` when `beta`, else `ranch`. */
+export function buildCask({ version, sha256, beta = version.includes("-") }) {
   if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
     throw new Error(`"${version}" is not a version`)
   }
   if (!/^[0-9a-f]{64}$/.test(sha256)) {
     throw new Error(`"${sha256}" is not a sha256`)
   }
-  const prerelease = version.includes("-")
-  const token = prerelease ? "ranch@beta" : "ranch"
-  const other = prerelease ? "ranch" : "ranch@beta"
-  // A pre-release is found among every release; a stable one is the latest.
-  const livecheck = prerelease
+  if (version.includes("-") && !beta) {
+    throw new Error(`${version} is a pre-release: only ranch@beta follows it`)
+  }
+  const token = beta ? "ranch@beta" : "ranch"
+  const other = beta ? "ranch" : "ranch@beta"
+  // The beta is found among every release; the stable one is the latest.
+  const livecheck = beta
     ? `  livecheck do
     url :url
     regex(/^v?(\\d+(?:\\.\\d+)+(?:-[0-9A-Za-z.-]+)?)$/i)
@@ -63,6 +69,17 @@ end
   return { file: `${token}.rb`, content }
 }
 
+/** The casks a version updates: both for a stable version, the beta alone for a pre-release. */
+export function buildCasks({ version, sha256 }) {
+  const beta = buildCask({ version, sha256, beta: true })
+  return version.includes("-") ? [beta] : [buildCask({ version, sha256, beta: false }), beta]
+}
+
+/** The version a cask's content names, or `null`. */
+export function caskVersion(content) {
+  return /^\s*version "([^"]+)"/m.exec(content ?? "")?.[1] ?? null
+}
+
 function main(argv) {
   const [tag, ...rest] = argv
   const flag = (name) => {
@@ -75,10 +92,18 @@ function main(argv) {
     console.error("usage: homebrew-cask.mjs <tag> --sha256 <hex> --tap <dir>")
     process.exit(1)
   }
-  const { file, content } = buildCask({ version: tag.replace(/^v/, ""), sha256 })
+  const version = tag.replace(/^v/, "")
   mkdirSync(join(tap, "Casks"), { recursive: true })
-  writeFileSync(join(tap, "Casks", file), content)
-  console.log(`Casks/${file}`)
+  for (const { file, content } of buildCasks({ version, sha256 })) {
+    const path = join(tap, "Casks", file)
+    const current = existsSync(path) ? caskVersion(readFileSync(path, "utf8")) : null
+    if (current && compareVersions(version, current) < 0) {
+      console.log(`Casks/${file} is at ${current}: left alone (this is ${version})`)
+      continue
+    }
+    writeFileSync(path, content)
+    console.log(`Casks/${file}`)
+  }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main(process.argv.slice(2))

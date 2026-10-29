@@ -199,7 +199,7 @@ const APPROVAL_MODES: { value: ApprovalMode; label: string; hint: string }[] = [
   {
     value: "all",
     label: "Does anything on a connection",
-    hint: "Reads that target a connection wait too. Listing connections and environments stays free.",
+    hint: "Reads that target a connection, and notes left on a failure cause, wait too. Listing connections and environments stays free.",
   },
   {
     value: "off",

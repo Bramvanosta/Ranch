@@ -6,8 +6,9 @@
 //!     keychain.
 //!   - Adding two connections with the same env_color reuses the same
 //!     environment row (auto-creates only on first use).
-//!   - When the keychain refuses a `set`, the entire transaction rolls back
-//!     and no connection row is left behind.
+//!   - When the keychain refuses a `set`, nothing is written: no connection
+//!     row, no group or environment; a row that cannot be saved takes its
+//!     secret back.
 //!
 //! Uses an InMemoryKeychain so the test is hermetic: no OS keychain access
 //! and no Linux libsecret dependency.
@@ -264,6 +265,63 @@ impl SecretStore for AlwaysFailingKeychain {
     }
 
     fn delete(&self, _connection_id: &str) -> Result<(), RanchError> {
+        Ok(())
+    }
+}
+
+/// The password goes to the keychain before the row is written (no write
+/// transaction waits on the keychain); a row that cannot be saved takes it
+/// back, so no secret is left behind for a connection that does not exist.
+#[tokio::test]
+async fn a_connection_that_is_not_saved_leaves_no_secret_behind() {
+    let dir = tempdir().expect("tempdir");
+    let db = Db::init(dir.path()).await.expect("db init");
+    let recording = std::sync::Arc::new(RecordingKeychain::default());
+    let keychain: std::sync::Arc<dyn SecretStore> = recording.clone();
+
+    let mut args = args_with("nowhere", "env-local", Some("hunter2"));
+    args.group = GroupSelector::Existing {
+        id: "no-such-group".into(),
+    };
+    let result = add_connection_inner(
+        args,
+        &repo(db.pool()),
+        &keychain,
+        &ranch_lib::adapters::bullmq_redis::specs(),
+    )
+    .await;
+
+    assert!(matches!(result, Err(RanchError::GroupNotFound { .. })));
+    assert_eq!(*recording.sets.lock().unwrap(), 1, "written first");
+    assert!(
+        recording.entries.lock().unwrap().is_empty(),
+        "then taken back"
+    );
+}
+
+/// A keychain that keeps its entries in view.
+#[derive(Default)]
+struct RecordingKeychain {
+    entries: Mutex<std::collections::HashMap<String, String>>,
+    sets: Mutex<u32>,
+}
+
+impl SecretStore for RecordingKeychain {
+    fn set(&self, connection_id: &str, secret: &str) -> Result<(), RanchError> {
+        *self.sets.lock().unwrap() += 1;
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(connection_id.to_string(), secret.to_string());
+        Ok(())
+    }
+
+    fn get(&self, connection_id: &str) -> Result<Option<String>, RanchError> {
+        Ok(self.entries.lock().unwrap().get(connection_id).cloned())
+    }
+
+    fn delete(&self, connection_id: &str) -> Result<(), RanchError> {
+        self.entries.lock().unwrap().remove(connection_id);
         Ok(())
     }
 }

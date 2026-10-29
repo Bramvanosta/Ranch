@@ -112,6 +112,23 @@ test("release notes without a summary: the lead of each bullet, a few of them", 
   assert.equal(extractNotes("## [v0.5.0]\n\n## [v0.4.0]\n- x", "0.5.0"), null)
 })
 
+test("release notes: an HTML comment is never shown", () => {
+  const changelog = [
+    "## [v0.4.0] - 2026-10-28",
+    "",
+    "<!-- Releasing: write ONE short paragraph",
+    "     right under the heading. -->",
+    "",
+    "Faster on a far Redis.",
+    "",
+    "### Added",
+    "- **One thing.**",
+  ].join("\n")
+  assert.equal(extractNotes(changelog, "0.4.0"), "Faster on a far Redis.")
+  const onlyComment = "## [v0.4.0]\n\n<!-- to do -->\n\n### Added\n- **One thing.** More.\n"
+  assert.equal(extractNotes(onlyComment, "0.4.0"), "• One thing")
+})
+
 test("arguments: one artifact may serve several platforms (a universal macOS build)", () => {
   assert.deepEqual(
     parseArgs([
@@ -136,8 +153,8 @@ test("arguments: one artifact may serve several platforms (a universal macOS bui
 
 test("download URLs, upload URLs and channels", () => {
   assert.equal(
-    assetDownloadUrl("Bramvanosta/ranch", "v0.3.0-rc.1", "Ranch_0.3.0-rc.1_amd64.AppImage"),
-    "https://github.com/Bramvanosta/ranch/releases/download/v0.3.0-rc.1/Ranch_0.3.0-rc.1_amd64.AppImage",
+    assetDownloadUrl("Bramvanosta/Ranch", "v0.3.0-rc.1", "Ranch_0.3.0-rc.1_amd64.AppImage"),
+    "https://github.com/Bramvanosta/Ranch/releases/download/v0.3.0-rc.1/Ranch_0.3.0-rc.1_amd64.AppImage",
   )
   assert.equal(
     uploadUrl("https://uploads.github.com/repos/o/r/releases/7/assets{?name,label}", "rc.json"),
@@ -213,7 +230,7 @@ function fakeGitHub() {
 const publish = (gh, tag, platforms, artifactName, overrides = {}) =>
   publishUpdate({
     gh,
-    repository: "Bramvanosta/ranch",
+    repository: "Bramvanosta/Ranch",
     tag,
     platforms,
     artifact: { name: artifactName, read: () => `bytes of ${artifactName}` },
@@ -250,15 +267,15 @@ test("each job publishes its platform; the last one completes the manifest", asy
     platforms: {
       "darwin-aarch64": {
         signature: "sig of Ranch.app.tar.gz",
-        url: "https://github.com/Bramvanosta/ranch/releases/download/v0.3.0/Ranch.app.tar.gz",
+        url: "https://github.com/Bramvanosta/Ranch/releases/download/v0.3.0/Ranch.app.tar.gz",
       },
       "darwin-x86_64": {
         signature: "sig of Ranch.app.tar.gz",
-        url: "https://github.com/Bramvanosta/ranch/releases/download/v0.3.0/Ranch.app.tar.gz",
+        url: "https://github.com/Bramvanosta/Ranch/releases/download/v0.3.0/Ranch.app.tar.gz",
       },
       "linux-x86_64": {
         signature: "sig of Ranch_0.3.0_amd64.AppImage",
-        url: "https://github.com/Bramvanosta/ranch/releases/download/v0.3.0/Ranch_0.3.0_amd64.AppImage",
+        url: "https://github.com/Bramvanosta/Ranch/releases/download/v0.3.0/Ranch_0.3.0_amd64.AppImage",
       },
     },
   })

@@ -14,6 +14,8 @@ When you save your first connection, macOS prompts you to grant Ranch access to 
 
 You can inspect or delete Ranch entries directly via **Keychain Access.app** → search for `dev.ranch.app`.
 
+**The key of the agent seals** (it protects what agents may do: approvals, the agent safety settings, each connection's lock and where it points) has its own entry, service `dev.ranch.app.integrity`, account `integrity-key`. Earlier releases kept it as `ranch::integrity` under `dev.ranch.app`; Ranch copies it to the new entry and keeps the old one for one more release. The first time `ranch-mcp` (started by your agent client) reads the new entry, macOS may ask whether it may: choose **Always Allow**. Until then it uses the old entry. Do not delete either entry: without the key, Ranch resets agent safety to its strictest settings and every connection must be saved again before agents can use it.
+
 ---
 
 ## Windows: Credential Manager

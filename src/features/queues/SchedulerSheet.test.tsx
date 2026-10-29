@@ -263,7 +263,7 @@ describe("SchedulerSheet: edit & delete", () => {
     const del = screen.getByTestId("scheduler-delete")
     fireEvent.click(del)
     expect(mocked.removeScheduler).not.toHaveBeenCalled()
-    expect(del).toHaveTextContent(/Delete for good/)
+    expect(del).toHaveTextContent(/Remove for good/)
     fireEvent.click(del)
     await waitFor(() =>
       expect(mocked.removeScheduler).toHaveBeenCalledWith({

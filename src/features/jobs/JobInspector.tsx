@@ -1,6 +1,7 @@
 import { ExternalLinkIcon, XIcon } from "lucide-react"
 import { useState } from "react"
 
+import { displayChord } from "@/commands/chords"
 import { Button } from "@/components/ui/button"
 import type { QueueId } from "@/lib/tauri/bindings"
 import { jobRoute, openRouteOrSay } from "@/lib/windows/openRoute"
@@ -32,7 +33,7 @@ export function JobInspector({
           variant="ghost"
           size="icon-sm"
           aria-label="Open in New Window"
-          title="Open in New Window (⌥↩)"
+          title={`Open in New Window (${displayChord("alt+enter")})`}
           onClick={() => openRouteOrSay(jobRoute(connectionId, queueId, jobId), { tab: false })}
         >
           <ExternalLinkIcon aria-hidden="true" />

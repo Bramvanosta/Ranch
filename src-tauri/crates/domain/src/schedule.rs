@@ -6,6 +6,12 @@
 //! (cron-parser, in JS). So Ranch only ever computes the **first** run of a
 //! cron pattern, and must only accept patterns that BullMQ's parser reads
 //! the same way.
+//!
+//! The timezone is part of that agreement. A pattern stored without `tz` is
+//! read by each worker in its own local time, which Ranch cannot know: a
+//! pattern Ranch saves always carries one, UTC when none is given, so the
+//! first run Ranch computes and the runs the workers compute match. A
+//! scheduler written without one by other code is previewed in UTC.
 
 use chrono::{DateTime, TimeZone, Utc};
 use chrono_tz::Tz;
@@ -25,7 +31,8 @@ pub const PREVIEW_RUNS: usize = 5;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Schedule {
     /// A cron expression, 5 fields (minute first) or 6 (second first), read
-    /// in `tz` (IANA name), UTC when `None`.
+    /// in `tz` (IANA name). `None`: saved as UTC, previewed in UTC (workers
+    /// read a stored pattern without one in their local time).
     Pattern { pattern: String, tz: Option<String> },
     /// A fixed interval.
     Every { every_ms: u64 },
@@ -237,11 +244,15 @@ impl SchedulerSpec {
         match &self.schedule {
             Schedule::Pattern { pattern, tz } => {
                 let pattern = pattern.split_whitespace().collect::<Vec<_>>().join(" ");
-                let tz = tz
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|t| !t.is_empty())
-                    .map(str::to_string);
+                // Never stored without one: the workers would read it in
+                // their local time, not in the UTC Ranch computes in.
+                let tz = Some(
+                    tz.as_deref()
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or("UTC")
+                        .to_string(),
+                );
                 let normalized = Schedule::Pattern {
                     pattern: pattern.clone(),
                     tz: tz.clone(),
@@ -492,8 +503,11 @@ mod tests {
             (None, Some(5_000), None)
         );
 
+        // No timezone: stored as UTC, the one Ranch computed the first run in.
         let blank_tz = spec(pattern("0 9 * * *", Some("  "))).prepare(now).unwrap();
-        assert_eq!(blank_tz.tz, None);
+        assert_eq!(blank_tz.tz.as_deref(), Some("UTC"));
+        let no_tz = spec(pattern("0 9 * * *", None)).prepare(now).unwrap();
+        assert_eq!(no_tz.tz.as_deref(), Some("UTC"));
         let empty_data = SchedulerSpec {
             data: "  ".into(),
             ..spec(Schedule::Every { every_ms: 5_000 })

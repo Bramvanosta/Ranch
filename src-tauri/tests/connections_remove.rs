@@ -145,11 +145,11 @@ async fn keychain_unavailable_during_delete_still_removes_row() {
         .get(0);
     assert_eq!(count, 0);
 
-    // `remove_connection` attempts THREE keychain
+    // `remove_connection` attempts FOUR keychain
     // deletes: `{id}` (Redis password) + `{id}::ssh` (SSH password) +
-    // `{id}::ssh::hostkey` (SSH host-key pin). All three are attempted
-    // even when the first reports KeychainUnavailable.
-    assert_eq!(*deletes_counter.lock().unwrap(), 3);
+    // `{id}::ssh::hostkey` (SSH host-key pin) + the jump host's pin. All
+    // four are attempted even when the first reports KeychainUnavailable.
+    assert_eq!(*deletes_counter.lock().unwrap(), 4);
 }
 
 /// Test double whose `delete` always returns `KeychainUnavailable`.

@@ -16,4 +16,4 @@ The key lives in a `Sealer` instance, built by each composition root and handed 
 - Tests choose their sealer: they seal nothing unless they build an enforcing one, as `tests/mcp_integrity.rs` does, and two tests no longer share a process-wide key.
 - The app still reads the plain value of a safety setting through `get` (the settings screen does); only the `safety` read carries a verdict, and only `ranch-mcp` checks it.
 - Another store for these values must seal inside itself too, and pass the seal tests.
-- A connection's seal covers its id, its agent read-only flag and its lock, not its backend or endpoint: changing where a connection points, or how its endpoint is stored, leaves its seal as it is.
+- A connection's seal covers its id, its agent read-only flag, its lock, and its backend and endpoint as stored: every write of where a connection points goes through the repository, which seals it again, and a change of how an endpoint is stored needs its seals carried over.

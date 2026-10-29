@@ -5,14 +5,7 @@ use ranch_domain::hierarchy::{
     Connection, Environment, EnvironmentSelector, Group, GroupSelector, MoveConnectionResult,
 };
 
-/// Work that must succeed for a write to be kept. It runs inside the
-/// write's transaction, after the rows and before the commit, so a failure
-/// leaves nothing behind: the secrets go to the keychain there.
-pub type BeforeCommit<'a> = &'a (dyn Fn() -> Result<(), RanchError> + Send + Sync);
-
-/// The same, for a copy: it is given the keychain reference of the
-/// connection being copied.
-pub type CopySecrets<'a> = &'a (dyn Fn(&str) -> Result<(), RanchError> + Send + Sync);
+use super::sealer::Sealer;
 
 /// A connection to save. The lock and the agent setting it starts with
 /// are decided by `domain::production` from the environment it lands in.
@@ -46,14 +39,18 @@ pub struct ConnectionEdit {
 }
 
 /// What a connection's backend is opened with, as stored (secrets apart).
+/// Its password is the secret named after its id
+/// (`ports::secrets::password_entry`).
 #[derive(Debug, Clone)]
 pub struct StoredSettings {
     pub backend: BackendKind,
     pub endpoint: Endpoint,
-    pub keychain_ref: String,
     pub locked: bool,
     pub name: String,
     pub env_color: Option<String>,
+    /// The backend, the endpoint and the lock as the app sealed them. A
+    /// process that checks seals opens nothing else.
+    pub sealed: bool,
 }
 
 /// What decides whether agents may write to a connection, and whether the
@@ -62,8 +59,10 @@ pub struct StoredSettings {
 pub struct AgentAccess {
     /// `None`: the connection follows the global default.
     pub mcp_readonly: Option<bool>,
+    pub locked: bool,
     pub name: String,
-    /// The agent read-only flag and the lock as the app sealed them.
+    /// The agent read-only flag, the lock and the endpoint as the app
+    /// sealed them.
     pub sealed: bool,
 }
 
@@ -82,27 +81,28 @@ pub trait ConnectionRepository: Send + Sync {
     async fn agent_access(&self, id: &str) -> Result<Option<AgentAccess>, RanchError>;
     /// Seal every connection as it stands: the first run with a key.
     async fn reseal_all(&self) -> Result<(), RanchError>;
-    async fn keychain_ref(&self, id: &str) -> Result<Option<String>, RanchError>;
+    /// Make every connection read-only for agents and locked, and leave it
+    /// unsealed: what is left when the key of the seals was lost while
+    /// seals existed, and where a connection points cannot be vouched for.
+    /// `ranch-mcp` opens none of them until the user saves it again.
+    async fn restrict_all(&self) -> Result<(), RanchError>;
+    /// Seal again, with the endpoint, every connection whose seal from
+    /// before the endpoint was sealed `verifier` finds valid; a connection
+    /// whose seal does not hold stays unsealed. Returns how many were
+    /// carried over.
+    async fn upgrade_seals(&self, verifier: &dyn Sealer) -> Result<usize, RanchError>;
     /// Save a new connection, placing it (creating a `New` group or
-    /// environment), then run `before_commit`.
-    async fn insert(
-        &self,
-        new: NewConnection,
-        before_commit: BeforeCommit<'_>,
-    ) -> Result<Connection, RanchError>;
-    async fn update(
-        &self,
-        edit: ConnectionEdit,
-        before_commit: BeforeCommit<'_>,
-    ) -> Result<Connection, RanchError>;
+    /// environment). Its secrets are the caller's: the keychain is never
+    /// asked while a write transaction is open (a keychain prompt would
+    /// hold every other writer). `insert`, `update` and `duplicate` fail
+    /// only before their commit: an error means nothing was saved, so the
+    /// caller may put the secrets back.
+    async fn insert(&self, new: NewConnection) -> Result<Connection, RanchError>;
+    async fn update(&self, edit: ConnectionEdit) -> Result<Connection, RanchError>;
     /// Copy a connection, its protections included, under `new_id` and the
-    /// next free "(copy)" name in its environment.
-    async fn duplicate(
-        &self,
-        source_id: &str,
-        new_id: &str,
-        copy_secrets: CopySecrets<'_>,
-    ) -> Result<Connection, RanchError>;
+    /// next free "(copy)" name in its environment. The secrets are the
+    /// caller's, as for `insert`.
+    async fn duplicate(&self, source_id: &str, new_id: &str) -> Result<Connection, RanchError>;
     async fn delete(&self, id: &str) -> Result<(), RanchError>;
     async fn set_collapsed(&self, id: &str, collapsed: bool) -> Result<(), RanchError>;
     async fn set_mcp_readonly(
@@ -132,13 +132,6 @@ pub trait ConnectionRepository: Send + Sync {
         id: &str,
         color_token: &str,
     ) -> Result<Vec<String>, RanchError>;
-    /// Only an empty environment can be deleted.
-    async fn delete_environment(&self, id: &str) -> Result<(), RanchError>;
-    async fn reorder_environments(
-        &self,
-        group_id: &str,
-        ordered_ids: &[String],
-    ) -> Result<(), RanchError>;
 
     // ── groups ──────────────────────────────────────────────────────────
     async fn list_groups(&self) -> Result<Vec<Group>, RanchError>;

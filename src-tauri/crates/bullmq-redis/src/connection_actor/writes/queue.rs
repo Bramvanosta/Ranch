@@ -46,7 +46,14 @@ pub(crate) async fn handle_pause_queue(
     token: &CancellationToken,
 ) -> Result<QueueActionResult, RanchError> {
     let domain_queue = QueueRef::parse(queue_id.as_str())?;
-    authorize_write(state, caller, "pause_queue").await?;
+    authorize_write(
+        state,
+        caller,
+        "pause_queue",
+        AuditAction::PauseQueue,
+        AuditTarget::queue(&domain_queue.id(), &domain_queue.name),
+    )
+    .await?;
 
     let mut conn = open_redis_for_actor(state, token).await?;
     let keys = resolve_keys_for_queue(state, &mut conn, &domain_queue, token).await?;
@@ -135,7 +142,14 @@ pub(crate) async fn handle_resume_queue(
     token: &CancellationToken,
 ) -> Result<QueueActionResult, RanchError> {
     let domain_queue = QueueRef::parse(queue_id.as_str())?;
-    authorize_write(state, caller, "resume_queue").await?;
+    authorize_write(
+        state,
+        caller,
+        "resume_queue",
+        AuditAction::ResumeQueue,
+        AuditTarget::queue(&domain_queue.id(), &domain_queue.name),
+    )
+    .await?;
 
     let mut conn = open_redis_for_actor(state, token).await?;
     let keys = resolve_keys_for_queue(state, &mut conn, &domain_queue, token).await?;

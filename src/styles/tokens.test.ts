@@ -111,9 +111,8 @@ describe.each(["light", "dark"] as Theme[])("%s theme", (theme) => {
   })
 })
 
-// The migration aliases are gone: no shadcn colour
-// variable is declared, and no utility in the code names one.
-it("declares no shadcn alias any more", () => {
+// No shadcn colour variable is declared, and no utility in the code names one.
+it("declares no shadcn alias", () => {
   for (const alias of [
     "background",
     "foreground",

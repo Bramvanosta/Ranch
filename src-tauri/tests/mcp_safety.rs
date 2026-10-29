@@ -318,8 +318,6 @@ fn safety_commands_are_never_mcp_tools() {
             "list_mcp_activity_sessions",
             "export_mcp_activity",
             "clear_mcp_activity",
-            "install_mcp_for_claude_desktop",
-            "install_mcp_for_cursor",
             "install_mcp_for_client",
             "launch_claude_code",
             "open_agent_app",

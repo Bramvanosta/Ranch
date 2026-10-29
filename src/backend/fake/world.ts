@@ -352,7 +352,7 @@ export function requestApproval(tool = "bulk_remove_jobs") {
       name: "send-refund-notice",
       options: { attempts: 3, delay: 60000 },
       // One value longer than the dialog on purpose: a payload is whatever
-      // the agent sends, and a long unbroken token used to stretch the
+      // the agent sends, and a long unbroken token must not stretch the
       // modal's grid column past the dialog's own width.
       data: {
         orderId: 4711,

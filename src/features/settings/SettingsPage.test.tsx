@@ -70,7 +70,7 @@ describe("SettingsPage", () => {
     expect(screen.queryByRole("tab", { name: "AI features" })).not.toBeInTheDocument()
   })
 
-  it("AI features turns agents off, and the pointer to the Agents page goes with it (16.1)", async () => {
+  it("AI features turns agents off, and the pointer to the Agents page goes with it", async () => {
     mocked.setAiFeatures.mockResolvedValue(ok(false))
     wrap(<SettingsPage tab="ai" onTab={vi.fn()} />)
     expect(screen.getByTestId("settings-ai-agents-page")).toBeInTheDocument()

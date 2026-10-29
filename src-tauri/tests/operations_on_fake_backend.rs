@@ -45,15 +45,15 @@ fn retry_f1() -> JobActionArgs {
 }
 
 #[tokio::test]
-async fn the_lock_refuses_a_retry_and_records_a_refused_bulk() {
+async fn the_lock_refuses_a_retry_and_records_each_refusal() {
     let backends = locked_with_a_failure().await;
 
     let single = retry_job_inner(retry_f1(), &backends, Caller::User).await;
     assert!(matches!(single, Err(RanchError::ConnectionLocked { .. })));
-    assert!(
-        backends.audit().is_empty(),
-        "a single refusal is not recorded"
-    );
+    let rows = backends.audit();
+    assert_eq!(rows.len(), 1, "the refused retry is recorded");
+    assert_eq!(rows[0].outcome, AuditOutcome::Failure);
+    assert_eq!(rows[0].target, AuditTarget::job(&emails(), "emails", "f1"));
 
     let many = BulkActionArgs {
         connection_id: CONN.into(),
@@ -63,13 +63,14 @@ async fn the_lock_refuses_a_retry_and_records_a_refused_bulk() {
     let refused = bulk_retry_jobs_inner(many, &backends, no_progress(), Caller::User).await;
     assert!(matches!(refused, Err(RanchError::ConnectionLocked { .. })));
     let rows = backends.audit();
-    assert_eq!(rows.len(), 1, "the bulk attempt is recorded once");
-    assert_eq!(rows[0].outcome, AuditOutcome::Failure);
-    assert_eq!(rows[0].outcome_reason.as_deref(), Some("Connection locked"));
-    assert_eq!(
-        rows[0].target,
-        AuditTarget::bulk_jobs(&emails(), "emails", 1)
-    );
+    assert_eq!(rows.len(), 2, "the bulk attempt is recorded once");
+    let bulk = rows
+        .iter()
+        .find(|row| matches!(row.target, AuditTarget::BulkJobs { .. }))
+        .expect("the bulk refusal");
+    assert_eq!(bulk.outcome, AuditOutcome::Failure);
+    assert_eq!(bulk.outcome_reason.as_deref(), Some("Connection locked"));
+    assert_eq!(bulk.target, AuditTarget::bulk_jobs(&emails(), "emails", 1));
 }
 
 #[tokio::test]

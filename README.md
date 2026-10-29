@@ -63,7 +63,7 @@ Open the `.dmg` (one signed and notarized universal app, for Apple Silicon and I
 
 ```bash
 brew install --cask bramvanosta/tap/ranch        # stable releases
-brew install --cask bramvanosta/tap/ranch@beta   # release candidates too
+brew install --cask bramvanosta/tap/ranch@beta   # release candidates and stable releases
 ```
 
 ### Linux
@@ -137,12 +137,15 @@ The full list of tools is in [docs/mcp-tools.md](docs/mcp-tools.md).
 The same UI, served over HTTP by the same Rust core, for the places a desktop app does not go: next to a staging Redis, in a compose stack, in a cluster.
 
 ```bash
+# Once: the key that encrypts the passwords Ranch stores. Keep this file.
+(umask 077 && openssl rand -base64 32 > ranch-secret.key)
+
 docker run -d --name ranch -p 127.0.0.1:8080:8080 -v ranch-data:/data \
-  -e RANCH_PASSWORD='choose-one' -e RANCH_SECRET_KEY="$(openssl rand -base64 32)" \
+  -e RANCH_PASSWORD='choose-one' -e RANCH_SECRET_KEY="$(cat ranch-secret.key)" \
   ghcr.io/bramvanosta/ranch:latest
 ```
 
-Open http://localhost:8080 (user `ranch`) and put TLS in front before exposing it beyond localhost. Configuration, sign-in with OIDC, the security model and what the image does not do are in [docs/server.md](docs/server.md).
+Recreate the container with the same key: with another one, the passwords already stored cannot be read. Open http://localhost:8080 (user `ranch`) and put TLS in front before exposing it beyond localhost. Configuration, sign-in with OIDC, the security model and what the image does not do are in [docs/server.md](docs/server.md).
 
 ## Development
 

@@ -8,7 +8,8 @@
 # For a real deployment: drop the `redis` service, point Ranch at yours, put a
 # TLS-terminating reverse proxy in front (Basic auth travels on every
 # request), and set RANCH_SECRET_KEY so the Redis passwords Ranch stores in
-# its volume are encrypted.
+# its volume are encrypted. Generate it once (`openssl rand -base64 32`) and
+# keep it: with another key, the stored passwords cannot be read.
 
 services:
   ranch:

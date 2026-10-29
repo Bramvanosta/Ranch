@@ -134,9 +134,7 @@ export const connectionsHandlers = {
     })
     return id
   },
-  delete_environment: () => null,
   reorder_groups: () => null,
-  reorder_environments: () => null,
   create_group: (args) => {
     const g: Group = {
       id: `g-${Date.now()}`,

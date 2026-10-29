@@ -6,7 +6,8 @@ use common::repo;
 use ranch_lib::adapters::secrets::InMemoryKeychain;
 use ranch_lib::adapters::sqlite::Db;
 use ranch_lib::commands::connections::{
-    add_connection_inner, duplicate_connection_inner, list_connections_inner, AddConnectionArgs,
+    add_connection_inner, duplicate_connection_inner, list_connections_inner,
+    ssh_hostkey_keychain_name, ssh_jump_hostkey_keychain_name, AddConnectionArgs,
 };
 use ranch_lib::commands::hierarchy::{EnvironmentSelector, GroupSelector};
 use ranch_lib::domain::errors::RanchError;
@@ -121,6 +122,45 @@ async fn duplicate_auth_less_connection_skips_keychain() {
     // Neither has a credential.
     assert_eq!(kc.get(&original.id).unwrap(), None);
     assert_eq!(kc.get(&copy.id).unwrap(), None);
+}
+
+#[tokio::test]
+async fn duplicate_keeps_the_pinned_host_keys() {
+    let dir = tempdir().unwrap();
+    let db = Db::init(dir.path()).await.unwrap();
+    let kc: std::sync::Arc<dyn ranch_lib::application::ports::SecretStore> =
+        std::sync::Arc::new(InMemoryKeychain::new());
+
+    let original = add_connection_inner(
+        args("foo", None),
+        &repo(db.pool()),
+        &kc,
+        &ranch_lib::adapters::bullmq_redis::specs(),
+    )
+    .await
+    .unwrap();
+    kc.set(&ssh_hostkey_keychain_name(&original.id), "SHA256:bastion")
+        .unwrap();
+    kc.set(&ssh_jump_hostkey_keychain_name(&original.id), "SHA256:jump")
+        .unwrap();
+    let copy = duplicate_connection_inner(&original.id, &repo(db.pool()), &kc)
+        .await
+        .unwrap();
+
+    // The copy reaches the same bastion: it does not trust whatever answers
+    // its first connect.
+    assert_eq!(
+        kc.get(&ssh_hostkey_keychain_name(&copy.id))
+            .unwrap()
+            .as_deref(),
+        Some("SHA256:bastion")
+    );
+    assert_eq!(
+        kc.get(&ssh_jump_hostkey_keychain_name(&copy.id))
+            .unwrap()
+            .as_deref(),
+        Some("SHA256:jump")
+    );
 }
 
 #[tokio::test]

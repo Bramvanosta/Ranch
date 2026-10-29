@@ -4,8 +4,12 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 
 ## [Unreleased]
 
-<!-- Releasing: rename this heading to `## [vX.Y.Z] - date` and write ONE short paragraph right under it,
-     before the first `###`. That paragraph is what the update dialog shows (scripts/publish-update.mjs). -->
+<!-- Releasing: add `## [vX.Y.Z] - date` above the version's sections and write ONE short paragraph right
+     under it, before the first `###`. That paragraph is what the update dialog shows (scripts/publish-update.mjs). -->
+
+## [v0.4.0] - 2026-10-28
+
+Fast on a far Redis, and clearer everywhere. In short: **one connection per Redis, kept open**, so a remote server answers like a local one and slow no longer means "unreachable"; **a new home** with every connection and what needs attention across them; **a connection overview** with live events, schedulers, workers, flows, a timeline and a map; **failed jobs grouped by cause** and running jobs with their progress; native windows, ⌘K to reach everything, and destructive actions that confirm in a sheet; **the Agents page**, where you choose what job data agents see and read the notes they leave on failures, and **Ask AI**; tighter safety for agents; and an install through **Homebrew** on macOS. Some keyboard shortcuts and MCP tool outputs change: the changelog lists them.
 
 ### Added
 
@@ -17,7 +21,8 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 - **You choose what job data agents see** (Settings › AI features › Job data shared with agents). *Mask fields whose name matches* is the default: the values of fields such as email, phone, token, password, secret, IBAN or card numbers reach an agent as •••, at any depth, and you edit the list. *Names, states and errors only* sends no payload, return value, progress or log at all; *Everything* sends them as they are. Failure reasons and stack traces are always shared.
 - **Agents leave notes on failures.** An agent that worked out why jobs fail can attach its diagnosis to the cause (new MCP tools `list_failure_causes` and `annotate_cause`): what is wrong and the steps to fix it. The note shows under the cause on the Failed tab (by cause) and in the overview's Needs attention, with who wrote it and when, and *Retry N*, *Ask a follow-up*, *Copy* and *Dismiss*; Agents › Notes lists them all. Notes need no approval (they change nothing in Redis), but a connection read-only for agents refuses them.
 - **Ask AI.** On a job, on a failure cause and on a connection, *Ask AI* hands the problem to your agent with the context ready: what it is, the last error and stack, the last logs, the queue's state and a link back into Ranch, with job data masked as in Settings › AI features: **Claude Code** starts in Terminal, in the group's code folder; **Claude Desktop** and **Cursor** get the prompt on the clipboard and open; or just *Copy prompt*. Agents › Ask AI About Selection (⇧⌥⌘A) uses your default agent. Set the default and each group's code folder in Agents › Setup & safety.
-- **Homebrew.** `brew install --cask bramvanosta/tap/ranch` installs the macOS app and follows stable releases; `ranch@beta` follows release candidates too. Each release updates the casks.
+- **Homebrew.** `brew install --cask bramvanosta/tap/ranch` installs the macOS app and follows stable releases; `ranch@beta` follows release candidates too, and stable releases as well, so it is never behind. Each release updates the casks.
+- **Ranch server on arm64.** The `ghcr.io/bramvanosta/ranch` image is published for amd64 and arm64.
 
 ### Changed (speed on a remote Redis)
 
@@ -97,7 +102,7 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 - **A job state is a code** (`list_jobs`'s `state` argument, and `state` in every job, flow and page an MCP tool returns). The codes are the same strings as before: the common lifecycle `waiting`, `active`, `completed`, `failed`, `delayed`, `paused`, and BullMQ's own `prioritized`, `waitingChildren`, `stalled`. `list_jobs` lists them as an `enum` in its schema; any other value is refused as before.
 - **A queue is named by its id** (every MCP tool). `list_queues` gives each queue an `id` (`bull:emails` on BullMQ: `{prefix}:{name}`, the base of its Redis keys) and a `name`; every tool that took `queueRef: { prefix, name }` takes `queueId` instead, a string to pass as given. Job rows (`list_jobs`, `list_failed_jobs`) carry `queueId` and `queue` instead of `queueRef`; `get_flow`'s nodes and `list_failure_causes`' jobs carry `queueId`; `annotate_cause` takes the `queueId` of one of the cause's jobs (and, optionally, the `queue` name to show); approval previews carry `queueId` next to the queue's name.
 - **A connection says its backend and where it points** (`list_connections`). Each connection carries `backend` (`bullmq-redis`) and `endpoint`, one line without credentials (`redis://redis.internal:6379/0`, `rediss://` with TLS, `… via SSH` through a tunnel), instead of `host`, `port`, `db`, `username`, `tls`, `tlsCustomCa` and `sshTunnel`: an agent no longer receives the user name, the CA, or the SSH bastion, user and key path. The rest of the row is the same, without `sidebarCollapsed`.
-- **A queue's jobs per state are a map.** `list_queues` returns `counts` (`{"waiting": 12, "active": 1, "failed": 3, …}`, keyed by state code) instead of `counters` with one field per BullMQ state. A state that is absent holds no job.
+- **A queue's jobs per state are a map.** `list_queues` returns `counts` (`{"waiting": 12, "active": 1, "failed": 3, …}`, keyed by state code) instead of `counters` with one field per BullMQ state. A state that is absent was not counted (BullMQ's `waitingChildren`): list its jobs to know.
 
 ### Fixed (queues)
 
@@ -112,6 +117,49 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 - **One scroll per screen.** A connection's overview could scroll as a whole window *and* inside its view *and* inside Live events: screen-reader labels placed outside the scrolling view stretched the window, and Live events had its own scroll box. Views now contain what they position, the window never scrolls, and Live events shows its 12 newest lines.
 - **Every page uses the full width.** The connections page and Needs attention were centred in a narrower column (and Agents capped), unlike every other screen.
 - **The Map names worker pools usefully.** Workers without a name were grouped by host. In containers every client comes from the same gateway address, so they all became one "Unnamed workers on 192.168.…" pool. They are now grouped by the queue they serve ("cron workers"), and the pool's details say how to name them.
+
+### Security (agents)
+
+- **Ranch's MCP server only opens connections the app saved.** A connection's seal covers where it points (its backend and endpoint), and `ranch-mcp` refuses a connection whose seal does not hold, reads included, with `connectionUnverified`: a process that edits Ranch's database can no longer have a saved password sent to its own host, or point a connection open to agent writes at another server. A connection's password is the keychain entry named after its id, never one the database names.
+- **A lock set in the app stops agent writes at once.** With approvals off, an agent's write is refused on a connection the app locked, even when the agent had used the connection before the lock.
+- The first launch after the update carries over the seals that still hold. A connection whose seal does not is refused to agents until you save it again in Ranch.
+- **An approval covers what you were shown.** Its seal also covers how the request was shown (connection, group, environment, color, preview): a request whose approval sheet another process rewrote runs nothing. A request still waiting when Ranch updates is refused once approved; the agent asks again.
+- **The key behind these seals has its own keychain entry**, apart from connection passwords, copied there on first launch; the old entry is kept for one more release, so a `ranch-mcp` you already allowed keeps working while macOS asks about the new one. If the key goes missing, Ranch resets agent safety to its strictest settings (AI off, every connection locked and read-only for agents) and says so, instead of trusting the database as it finds it: save each connection again in Ranch to let agents use it.
+- **When its key cannot be read, `ranch-mcp` treats AI features as off** and shares job names only.
+- **With approval mode "Does anything on a connection", `annotate_cause` waits for approval too.** Listing connections and environments stays free.
+- **Every write refused by a connection's lock is in the audit log** as a failure, single or bulk, from the app or from an agent.
+- **`ranch-mcp` no longer updates the database.** When the database does not match its version, it says to open Ranch or to update it, then to restart the agent client, and stops instead of failing call after call.
+
+### Security (connections and Ranch server)
+
+- **A saved Redis password is only reused over the same route**: same host, port, TLS and CA, through the same SSH bastion and jump host. Changing one asks for the password again.
+- **Ranch server refuses HTTP Basic sign-in for a minute to an address that sent 10 wrong passwords**, and to everyone past 200 from all addresses together. Behind a reverse proxy, clients share the proxy's address.
+- **Signing out of Ranch server revokes the session on the server**: a copy of its cookie no longer opens anything. Existing sessions sign in again once.
+- **The database is readable by its owner only** (`ranch.db` and its `-wal` and `-shm` files).
+
+### Fixed (data)
+
+- **Ranch keeps a copy of its database before it updates it** (`ranch.db.bak-schema-<n>`, beside it).
+- **When the database cannot be opened, Ranch says why and where it is**, and offers to show it, set it aside and start fresh, or quit, instead of closing at once. A database written by a newer Ranch is refused with a clear message.
+- **Ranch writes a log file** (`~/Library/Logs/dev.ranch.app/ranch.log` on macOS), crashes included.
+- **Concurrent writes from the app and agents wait their turn** instead of failing with "database is locked", approvals included.
+- **Saving a connection no longer holds the database while the keychain asks for permission.**
+- **Settings saved while the keychain was locked are protected once it opens**, if nothing else changed them meanwhile; saving never waits on the keychain.
+- **Duplicating a connection keeps its pinned SSH host keys**; removing one also forgets the jump host's pin.
+- **The audit log shows the right environment color** after a connection is moved or its environment recolored, and one unreadable row no longer hides the page.
+
+### Fixed (across the app)
+
+- **Retry N and Remove N on a failure cause act only on the open queue's jobs**, never on a queue of the same name under another prefix.
+- **Agents' notes show on their cause in the queue view**, matched by queue id.
+- **Retry in the command palette is offered for failed jobs only**, and says how it went.
+- **The Waiting children tab is always reachable**: a state the backend does not count keeps its tab, without a number.
+- **A paused queue counts the jobs its pause holds**, on the overview as in Needs attention.
+- **A cron scheduler saved by Ranch always carries its timezone**, UTC when none is given, so the first run Ranch computes and the runs workers compute agree; a pattern saved elsewhere without one says it runs in the worker's local time.
+- **Keyboard hints show Ctrl outside macOS.**
+- **Menus leave out what the connection's backend does not support**, and Clean is red like Drain.
+- **Ask AI prompts give the `connectionId` and `queueId`** the Ranch MCP tools take; an agent's queue name is quoted as data in a note's follow-up.
+- **Texts point to the right places** (Agents › Setup & safety, Settings › Alerts) and name states by their label.
 
 ### Fixed (window)
 

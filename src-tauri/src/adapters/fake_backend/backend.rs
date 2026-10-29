@@ -118,15 +118,38 @@ fn queue_of(id: &QueueId) -> Result<(QueueId, String), RanchError> {
 }
 
 impl FakeBackend {
+    /// A write refused by the lock leaves a failure row for its target,
+    /// as the real actor does. Best effort: failing to record it never
+    /// hides the refusal.
     async fn authorize(
         &self,
         world: &World,
         caller: &Caller,
         tool: &str,
+        (action, target): (AuditAction, AuditTarget),
     ) -> Result<(), RanchError> {
-        self.writes
+        let decision = self
+            .writes
             .authorize(&self.stamp, world.lock, caller, tool)
-            .await
+            .await;
+        if let Err(RanchError::ConnectionLocked { .. }) = &decision {
+            let reason = Some("Connection locked".to_string());
+            let recorded = self
+                .writes
+                .record(
+                    &self.stamp,
+                    caller,
+                    action,
+                    target,
+                    AuditOutcome::Failure,
+                    reason,
+                )
+                .await;
+            if let Err(e) = recorded {
+                tracing::warn!(error = %e, "lock-rejection audit write failed");
+            }
+        }
+        decision
     }
 
     async fn record(
@@ -174,8 +197,11 @@ impl FakeBackend {
         from: JobState,
     ) -> Result<JobActionResult, RanchError> {
         let mut world = self.world.lock().await;
-        self.authorize(&world, &caller, tool).await?;
-        let queue = world.queues.get_mut(&queue_name(args.queue_id.as_str())?);
+        let (queue_id, name) = queue_of(&args.queue_id)?;
+        let target = AuditTarget::job(&queue_id, &name, &args.job_id);
+        self.authorize(&world, &caller, tool, (action, target.clone()))
+            .await?;
+        let queue = world.queues.get_mut(&name);
         let paused = queue.as_ref().is_some_and(|q| q.paused);
         match queue.and_then(|q| q.job_mut(&args.job_id)) {
             Some(job) if job.state == from => {
@@ -188,8 +214,6 @@ impl FakeBackend {
                 return Err(self.invalid_state(verb, &args, current, from));
             }
         }
-        let (queue_id, name) = queue_of(&args.queue_id)?;
-        let target = AuditTarget::job(&queue_id, &name, &args.job_id);
         self.record(&caller, action, target, None).await?;
         Ok(JobActionResult {
             job_id: args.job_id,
@@ -210,26 +234,8 @@ impl FakeBackend {
         let total = args.job_ids.len() as u32;
         let (queue_id, name) = queue_of(&args.queue_id)?;
         let target = AuditTarget::bulk_jobs(&queue_id, &name, total);
-        if let Err(refused) = self.authorize(&world, &caller, tool).await {
-            if matches!(refused, RanchError::ConnectionLocked { .. }) {
-                let reason = Some("Connection locked".to_string());
-                let recorded = self
-                    .writes
-                    .record(
-                        &self.stamp,
-                        &caller,
-                        action,
-                        target,
-                        AuditOutcome::Failure,
-                        reason,
-                    )
-                    .await;
-                if let Err(e) = recorded {
-                    tracing::warn!(error = %e, "bulk lock-rejection audit write failed");
-                }
-            }
-            return Err(refused);
-        }
+        self.authorize(&world, &caller, tool, (action, target.clone()))
+            .await?;
         let mut undeclared = FakeQueue::new(&name);
         let queue = world.queues.get_mut(&name).unwrap_or(&mut undeclared);
         let mut failed = Vec::new();
@@ -546,10 +552,11 @@ impl JobActions for FakeBackend {
         caller: Caller,
     ) -> Result<AddJobResult, RanchError> {
         let mut world = self.world.lock().await;
-        self.authorize(&world, &caller, "add_job").await?;
+        let (queue_id, name) = queue_of(&queue_id)?;
+        let refused = (AuditAction::AddJob, AuditTarget::queue(&queue_id, &name));
+        self.authorize(&world, &caller, "add_job", refused).await?;
         let job =
             PreparedJob::try_from(&job).map_err(|reason| RanchError::InvalidInput { reason })?;
-        let (queue_id, name) = queue_of(&queue_id)?;
         let queue = world
             .queues
             .get_mut(&name)
@@ -600,7 +607,13 @@ impl JobActions for FakeBackend {
         caller: Caller,
     ) -> Result<JobActionResult, RanchError> {
         let mut world = self.world.lock().await;
-        self.authorize(&world, &caller, "remove_job").await?;
+        let (queue_id, name) = queue_of(&args.queue_id)?;
+        let refused = (
+            AuditAction::RemoveJob,
+            AuditTarget::job(&queue_id, &name, &args.job_id),
+        );
+        self.authorize(&world, &caller, "remove_job", refused)
+            .await?;
         let removed = world
             .queues
             .get_mut(&queue_name(args.queue_id.as_str())?)
@@ -721,9 +734,15 @@ impl Maintenance for FakeBackend {
     ) -> Result<MaintenanceResult, RanchError> {
         let op = &operation;
         let mut world = self.world.lock().await;
-        self.authorize(&world, &caller, op.tool()).await?;
-        let now = now_ms();
         let (queue_id, name) = queue_of(&queue_id)?;
+        let action = match op {
+            QueueMaintenance::Drain { .. } => AuditAction::DrainQueue,
+            QueueMaintenance::Clean { .. } => AuditAction::CleanQueue,
+            QueueMaintenance::RetryAllFailed => AuditAction::RetryAllFailed,
+        };
+        let refused = (action, AuditTarget::queue(&queue_id, &name));
+        self.authorize(&world, &caller, op.tool(), refused).await?;
+        let now = now_ms();
         let mut undeclared = FakeQueue::new(&name);
         let queue = world.queues.get_mut(&name).unwrap_or(&mut undeclared);
         let ids: Vec<String> = queue
@@ -749,10 +768,9 @@ impl Maintenance for FakeBackend {
             }
             affected += 1;
         }
-        let (action, verb) = match op {
-            QueueMaintenance::Drain { .. } => (AuditAction::DrainQueue, "removed"),
-            QueueMaintenance::Clean { .. } => (AuditAction::CleanQueue, "removed"),
-            QueueMaintenance::RetryAllFailed => (AuditAction::RetryAllFailed, "retried"),
+        let verb = match op {
+            QueueMaintenance::Drain { .. } | QueueMaintenance::Clean { .. } => "removed",
+            QueueMaintenance::RetryAllFailed => "retried",
         };
         let mut reason = format!("{affected} {verb}");
         if skipped > 0 {
@@ -779,7 +797,12 @@ impl QueueControl for FakeBackend {
     ) -> Result<QueueActionResult, RanchError> {
         let (queue_id, name) = queue_of(&queue_id)?;
         let mut world = self.world.lock().await;
-        self.authorize(&world, &caller, "pause_queue").await?;
+        let refused = (
+            AuditAction::PauseQueue,
+            AuditTarget::queue(&queue_id, &name),
+        );
+        self.authorize(&world, &caller, "pause_queue", refused)
+            .await?;
         let queue = queue_entry(&mut world, &name);
         let already_in_state = queue.paused;
         queue.paused = true;
@@ -807,7 +830,12 @@ impl QueueControl for FakeBackend {
     ) -> Result<QueueActionResult, RanchError> {
         let (queue_id, name) = queue_of(&queue_id)?;
         let mut world = self.world.lock().await;
-        self.authorize(&world, &caller, "resume_queue").await?;
+        let refused = (
+            AuditAction::ResumeQueue,
+            AuditTarget::queue(&queue_id, &name),
+        );
+        self.authorize(&world, &caller, "resume_queue", refused)
+            .await?;
         let queue = queue_entry(&mut world, &name);
         let already_in_state = !queue.paused;
         queue.paused = false;
@@ -884,7 +912,13 @@ impl Schedules for FakeBackend {
         caller: Caller,
     ) -> Result<SchedulerSaved, RanchError> {
         let mut world = self.world.lock().await;
-        self.authorize(&world, &caller, "upsert_scheduler").await?;
+        let refused = {
+            let (queue_id, name) = queue_of(&queue_id)?;
+            let target = AuditTarget::scheduler(&queue_id, &name, &spec.id);
+            (AuditAction::UpsertScheduler, target)
+        };
+        self.authorize(&world, &caller, "upsert_scheduler", refused)
+            .await?;
         let now = chrono::Utc::now();
         let prepared = spec
             .prepare(now)
@@ -933,7 +967,9 @@ impl Schedules for FakeBackend {
         caller: Caller,
     ) -> Result<SchedulerActionResult, RanchError> {
         let mut world = self.world.lock().await;
-        self.authorize(&world, &caller, "remove_scheduler").await?;
+        let refused = (AuditAction::RemoveScheduler, scheduler_target(&args)?);
+        self.authorize(&world, &caller, "remove_scheduler", refused)
+            .await?;
         let queue = world.queues.get_mut(&queue_name(args.queue_id.as_str())?);
         let Some(queue) = queue.filter(|q| q.scheduler(&args.scheduler_key).is_some()) else {
             return Err(self.scheduler_not_found(&args));
@@ -960,7 +996,9 @@ impl Schedules for FakeBackend {
         caller: Caller,
     ) -> Result<SchedulerActionResult, RanchError> {
         let mut world = self.world.lock().await;
-        self.authorize(&world, &caller, "pause_scheduler").await?;
+        let refused = (AuditAction::PauseScheduler, scheduler_target(&args)?);
+        self.authorize(&world, &caller, "pause_scheduler", refused)
+            .await?;
         let Some(queue) = world.queues.get_mut(&queue_name(args.queue_id.as_str())?) else {
             return Err(self.scheduler_not_found(&args));
         };
@@ -995,7 +1033,9 @@ impl Schedules for FakeBackend {
         caller: Caller,
     ) -> Result<SchedulerActionResult, RanchError> {
         let mut world = self.world.lock().await;
-        self.authorize(&world, &caller, "resume_scheduler").await?;
+        let refused = (AuditAction::ResumeScheduler, scheduler_target(&args)?);
+        self.authorize(&world, &caller, "resume_scheduler", refused)
+            .await?;
         let now = chrono::Utc::now();
         let Some(queue) = world.queues.get_mut(&queue_name(args.queue_id.as_str())?) else {
             return Err(self.scheduler_not_found(&args));

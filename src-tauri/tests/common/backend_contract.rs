@@ -818,14 +818,26 @@ pub async fn the_lock(backends: &dyn Backends, seeder: &dyn Seeder) {
         Failed,
         "reads still work, and nothing moved"
     );
-    // Only the bulk refusal is recorded, as the attempt it was.
+    // Each refusal is recorded, as the attempt it was.
     assert_eq!(
         seeder.audit(&conn).await,
-        [row(
-            AuditAction::RetryJob,
-            on_bulk(&qid, q, 1),
-            AuditOutcome::Failure
-        )]
+        [
+            row(
+                AuditAction::RetryJob,
+                on_job(&qid, q, "f1"),
+                AuditOutcome::Failure
+            ),
+            row(
+                AuditAction::RetryJob,
+                on_bulk(&qid, q, 1),
+                AuditOutcome::Failure
+            ),
+            row(
+                AuditAction::PauseQueue,
+                on_queue(&qid, q),
+                AuditOutcome::Failure
+            ),
+        ]
     );
 
     assert_eq!(control.unlock().await.unwrap(), ReadOnlyState::Unlocked);
@@ -836,5 +848,6 @@ pub async fn the_lock(backends: &dyn Backends, seeder: &dyn Seeder) {
     assert_eq!(control.lock().await.unwrap(), ReadOnlyState::Locked);
     let retry = actions.retry_job(job(&qid, "f1"), Caller::User).await;
     assert!(locked(&retry), "locked again: {retry:?}");
-    assert_eq!(seeder.audit(&conn).await.len(), 2);
+    // The three refusals, the retry, and the refusal once locked again.
+    assert_eq!(seeder.audit(&conn).await.len(), 5);
 }

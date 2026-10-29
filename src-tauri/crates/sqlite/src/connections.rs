@@ -1,15 +1,16 @@
 //! The saved connections, environments and groups, in `ranch.db`.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 
+use crate::db::begin_immediate;
 use ranch_application::ports::connections::{
-    AgentAccess, BeforeCommit, ConnectionEdit, ConnectionRepository, CopySecrets, NewConnection,
-    StoredSettings,
+    AgentAccess, ConnectionEdit, ConnectionRepository, NewConnection, StoredSettings,
 };
-use ranch_application::ports::sealer::{connection_parts, Check, Sealer};
+use ranch_application::ports::sealer::{connection_parts, legacy_connection_parts, Check, Sealer};
 use ranch_application::ports::Clock;
 use ranch_domain::endpoint::{BackendKind, Endpoint};
 use ranch_domain::errors::RanchError;
@@ -23,6 +24,10 @@ pub struct SqliteConnectionRepository {
     pool: SqlitePool,
     sealer: Arc<dyn Sealer>,
     clock: Arc<dyn Clock>,
+    /// Connections this process wrote while it had no key (the keychain was
+    /// locked at launch), with what it wrote: sealed by the first write
+    /// sealed once the key is back, if the row still holds just that.
+    unsealed: Mutex<BTreeMap<String, SealedFields>>,
 }
 
 impl SqliteConnectionRepository {
@@ -31,6 +36,7 @@ impl SqliteConnectionRepository {
             pool,
             sealer,
             clock,
+            unsealed: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -38,30 +44,128 @@ impl SqliteConnectionRepository {
     fn now(&self) -> String {
         self.clock.now().to_rfc3339()
     }
+
+    /// Seal one connection as it now stands. Called by every write of its
+    /// flags or its endpoint, in the same transaction. Without a key, the
+    /// connection is remembered with what this process wrote, and sealed
+    /// with the next one that gets a seal if its row has not changed since
+    /// (another process may have written it). Returns the connections done
+    /// with, to [`forget`](Self::forget) once the transaction is committed.
+    async fn reseal(
+        &self,
+        conn: &mut sqlx::SqliteConnection,
+        id: &str,
+    ) -> Result<Vec<String>, RanchError> {
+        let Some(fields) = sealed_fields(conn, id).await? else {
+            return Ok(vec![id.to_string()]);
+        };
+        if !write_seal(conn, self.sealer.as_ref(), id, &fields).await? {
+            self.unsealed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id.to_string(), fields);
+            return Ok(Vec::new());
+        }
+        let earlier: Vec<(String, SealedFields)> = self
+            .unsealed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(id, fields)| (id.clone(), fields.clone()))
+            .collect();
+        let mut done = vec![id.to_string()];
+        for (other, written) in earlier {
+            if other == id {
+                continue;
+            }
+            if sealed_fields(conn, &other).await?.as_ref() == Some(&written) {
+                write_seal(conn, self.sealer.as_ref(), &other, &written).await?;
+            }
+            done.push(other);
+        }
+        Ok(done)
+    }
+
+    /// Drop connections [`reseal`](Self::reseal) is done with, once their
+    /// transaction is committed: a rolled back one is still remembered.
+    fn forget(&self, done: Vec<String>) {
+        let mut unsealed = self.unsealed.lock().unwrap_or_else(|e| e.into_inner());
+        for id in done {
+            unsealed.remove(&id);
+        }
+    }
 }
 
-/// Seal one connection as it now stands. Called by every write of its flags,
-/// in the same transaction.
-async fn reseal(
+/// What a connection's seal covers, as its row holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SealedFields {
+    mcp_readonly: Option<i64>,
+    is_locked: i64,
+    backend: String,
+    endpoint: String,
+}
+
+async fn sealed_fields(
+    conn: &mut sqlx::SqliteConnection,
+    id: &str,
+) -> Result<Option<SealedFields>, RanchError> {
+    let row: Option<(Option<i64>, i64, String, String)> = sqlx::query_as(
+        "SELECT mcp_readonly, is_locked, backend, endpoint FROM connections WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(RanchError::database)?;
+    Ok(row.map(
+        |(mcp_readonly, is_locked, backend, endpoint)| SealedFields {
+            mcp_readonly,
+            is_locked,
+            backend,
+            endpoint,
+        },
+    ))
+}
+
+/// Seal one connection over `fields`; `false` when there is no key to
+/// seal with (the row is left without a seal).
+async fn write_seal(
     conn: &mut sqlx::SqliteConnection,
     sealer: &dyn Sealer,
     id: &str,
-) -> Result<(), RanchError> {
-    let row: Option<(Option<i64>, i64)> =
-        sqlx::query_as("SELECT mcp_readonly, is_locked FROM connections WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(RanchError::database)?;
-    if let Some((mcp_readonly, is_locked)) = row {
-        sqlx::query("UPDATE connections SET safety_seal = ? WHERE id = ?")
-            .bind(sealer.seal(&connection_parts(id, mcp_readonly, is_locked)))
-            .bind(id)
-            .execute(&mut *conn)
-            .await
-            .map_err(RanchError::database)?;
-    }
-    Ok(())
+    fields: &SealedFields,
+) -> Result<bool, RanchError> {
+    let parts = connection_parts(
+        id,
+        fields.mcp_readonly,
+        fields.is_locked,
+        &fields.backend,
+        &fields.endpoint,
+    );
+    let seal = sealer.seal(&parts);
+    let sealed = seal.is_some();
+    sqlx::query("UPDATE connections SET safety_seal = ? WHERE id = ?")
+        .bind(seal)
+        .bind(id)
+        .execute(&mut *conn)
+        .await
+        .map_err(RanchError::database)?;
+    Ok(sealed)
+}
+
+/// One connection as `list` and `get` show it, read on `conn` (inside a
+/// write's transaction, so nothing that can fail comes after its commit).
+async fn connection_on(
+    conn: &mut sqlx::SqliteConnection,
+    id: &str,
+) -> Result<Connection, RanchError> {
+    let sql = format!("{CONNECTION_SELECT} WHERE c.id = ?");
+    let row: Option<ConnectionRow> = sqlx::query_as(&sql)
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(RanchError::database)?;
+    row.map(ConnectionRow::into_connection)
+        .ok_or_else(|| RanchError::ConnectionNotFound { id: id.to_string() })
 }
 
 /// Row shape shared by `list` and `get`. A struct rather than a tuple
@@ -141,12 +245,13 @@ fn encode_endpoint(endpoint: &Endpoint) -> String {
 /// Row tuple for `stored_settings`, aliased so clippy's `type_complexity`
 /// lint stays quiet (the columns include `is_locked`, `name`, and the
 /// joined `env.color_token` so the backend can open with full identity +
-/// initial lock state).
+/// initial lock state, and what the seal covers).
 type SettingsRow = (
     String,         // backend
     String,         // endpoint (JSON)
-    String,         // keychain_ref
     i64,            // is_locked
+    Option<i64>,    // mcp_readonly
+    Option<String>, // safety_seal
     String,         // name
     Option<String>, // env_color (joined from environments.color_token)
 );
@@ -331,10 +436,13 @@ impl ConnectionRepository for SqliteConnectionRepository {
         // JOIN` so a connection with a missing env row (shouldn't happen:
         // FK constraint, but defensive) still resolves with `env_color =
         // None`.
+        //
+        // The seal is checked on the very row the backend opens with, so
+        // nothing written between the check and the open gets through.
         let row: Option<SettingsRow> = sqlx::query_as(
             r#"
-            SELECT c.backend, c.endpoint, c.keychain_ref,
-                   c.is_locked, c.name, e.color_token AS env_color
+            SELECT c.backend, c.endpoint, c.is_locked, c.mcp_readonly,
+                   c.safety_seal, c.name, e.color_token AS env_color
             FROM connections c
             LEFT JOIN environments e ON c.environment_id = e.id
             WHERE c.id = ?
@@ -345,33 +453,43 @@ impl ConnectionRepository for SqliteConnectionRepository {
         .await
         .map_err(RanchError::database)?;
         Ok(row.map(
-            |(backend, endpoint, keychain_ref, is_locked, name, env_color)| StoredSettings {
-                backend: BackendKind::new(backend),
-                endpoint: decode_endpoint_column(&endpoint, id),
-                keychain_ref,
-                locked: is_locked != 0,
-                name,
-                env_color,
+            |(backend, endpoint, is_locked, mcp_readonly, seal, name, env_color)| {
+                let parts = connection_parts(id, mcp_readonly, is_locked, &backend, &endpoint);
+                StoredSettings {
+                    sealed: self.sealer.check(&parts, seal.as_deref()) == Check::Valid,
+                    endpoint: decode_endpoint_column(&endpoint, id),
+                    backend: BackendKind::new(backend),
+                    locked: is_locked != 0,
+                    name,
+                    env_color,
+                }
             },
         ))
     }
 
     async fn agent_access(&self, id: &str) -> Result<Option<AgentAccess>, RanchError> {
-        let row: Option<(Option<i64>, i64, Option<String>, String)> = sqlx::query_as(
-            "SELECT mcp_readonly, is_locked, safety_seal, name FROM connections WHERE id = ?",
+        type AccessRow = (Option<i64>, i64, String, String, Option<String>, String);
+        let row: Option<AccessRow> = sqlx::query_as(
+            r#"
+            SELECT mcp_readonly, is_locked, backend, endpoint, safety_seal, name
+            FROM connections WHERE id = ?
+            "#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await
         .map_err(RanchError::database)?;
-        Ok(row.map(|(explicit, is_locked, seal, name)| AgentAccess {
-            mcp_readonly: explicit.map(|v| v != 0),
-            name,
-            sealed: self
-                .sealer
-                .check(&connection_parts(id, explicit, is_locked), seal.as_deref())
-                == Check::Valid,
-        }))
+        Ok(
+            row.map(|(explicit, is_locked, backend, endpoint, seal, name)| {
+                let parts = connection_parts(id, explicit, is_locked, &backend, &endpoint);
+                AgentAccess {
+                    mcp_readonly: explicit.map(|v| v != 0),
+                    locked: is_locked != 0,
+                    name,
+                    sealed: self.sealer.check(&parts, seal.as_deref()) == Check::Valid,
+                }
+            }),
+        )
     }
 
     async fn reseal_all(&self) -> Result<(), RanchError> {
@@ -381,31 +499,63 @@ impl ConnectionRepository for SqliteConnectionRepository {
             .map_err(RanchError::database)?;
         let mut conn = self.pool.acquire().await.map_err(RanchError::database)?;
         for (id,) in ids {
-            reseal(&mut conn, self.sealer.as_ref(), &id).await?;
+            let done = self.reseal(&mut conn, &id).await?;
+            self.forget(done);
         }
         Ok(())
     }
 
-    async fn keychain_ref(&self, id: &str) -> Result<Option<String>, RanchError> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT keychain_ref FROM connections WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(RanchError::database)?;
-        Ok(row.map(|(r,)| r))
+    async fn restrict_all(&self) -> Result<(), RanchError> {
+        // Nothing here is sealed, nor remembered to be: where a connection
+        // points was not written by this process, which cannot vouch for
+        // it. Saving the connection again in the app seals it.
+        let now = self.now();
+        sqlx::query(
+            "UPDATE connections SET mcp_readonly = 1, is_locked = 1, safety_seal = NULL, updated_at = ?",
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(RanchError::database)?;
+        self.unsealed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        Ok(())
     }
 
-    async fn insert(
-        &self,
-        new: NewConnection,
-        before_commit: BeforeCommit<'_>,
-    ) -> Result<Connection, RanchError> {
+    async fn upgrade_seals(&self, verifier: &dyn Sealer) -> Result<usize, RanchError> {
+        type SealRow = (String, Option<i64>, i64, String, String, Option<String>);
+        let rows: Vec<SealRow> = sqlx::query_as(
+            "SELECT id, mcp_readonly, is_locked, backend, endpoint, safety_seal FROM connections",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RanchError::database)?;
+        let mut conn = self.pool.acquire().await.map_err(RanchError::database)?;
+        let mut upgraded = 0;
+        for (id, mcp_readonly, is_locked, backend, endpoint, seal) in rows {
+            let current = connection_parts(&id, mcp_readonly, is_locked, &backend, &endpoint);
+            if verifier.check(&current, seal.as_deref()) == Check::Valid {
+                continue;
+            }
+            let legacy = legacy_connection_parts(&id, mcp_readonly, is_locked);
+            if verifier.check(&legacy, seal.as_deref()) == Check::Valid {
+                let done = self.reseal(&mut conn, &id).await?;
+                self.forget(done);
+                upgraded += 1;
+            }
+        }
+        Ok(upgraded)
+    }
+
+    async fn insert(&self, new: NewConnection) -> Result<Connection, RanchError> {
         let now = self.now();
         let connection_id = new.id;
 
-        // One transaction, so a keychain failure leaves SQLite untouched.
-        let mut tx = self.pool.begin().await.map_err(RanchError::database)?;
+        // One transaction: the connection and any group or environment
+        // created for it are kept together or not at all.
+        let mut tx = begin_immediate(&self.pool).await?;
 
         // The user picks group + environment; anything `New` is
         // created inside this transaction so a later failure rolls it back too.
@@ -433,7 +583,9 @@ impl ConnectionRepository for SqliteConnectionRepository {
         .bind(&new.name)
         .bind(new.backend.as_str())
         .bind(encode_endpoint(&new.endpoint))
-        .bind(&connection_id) // keychain_ref convention: same as connection id
+        // The column is kept for earlier releases' ranch-mcp; this one
+        // names the password after the id and never reads it.
+        .bind(&connection_id)
         .bind(is_locked)
         .bind(mcp_readonly)
         .bind(&now)
@@ -441,13 +593,10 @@ impl ConnectionRepository for SqliteConnectionRepository {
         .execute(&mut *tx)
         .await
         .map_err(RanchError::database)?;
-        reseal(&mut tx, self.sealer.as_ref(), &connection_id).await?;
-
-        // A failure here drops the transaction without a commit: no row is
-        // left pointing at a missing secret.
-        before_commit()?;
+        let done = self.reseal(&mut tx, &connection_id).await?;
 
         tx.commit().await.map_err(RanchError::database)?;
+        self.forget(done);
 
         Ok(Connection {
             id: connection_id,
@@ -466,13 +615,9 @@ impl ConnectionRepository for SqliteConnectionRepository {
         })
     }
 
-    async fn update(
-        &self,
-        edit: ConnectionEdit,
-        before_commit: BeforeCommit<'_>,
-    ) -> Result<Connection, RanchError> {
+    async fn update(&self, edit: ConnectionEdit) -> Result<Connection, RanchError> {
         let now = self.now();
-        let mut tx = self.pool.begin().await.map_err(RanchError::database)?;
+        let mut tx = begin_immediate(&self.pool).await?;
 
         // Existence check first so an unknown id reports ConnectionNotFound
         // rather than a hierarchy error.
@@ -527,26 +672,17 @@ impl ConnectionRepository for SqliteConnectionRepository {
                 .await
                 .map_err(RanchError::database)?;
         }
-        reseal(&mut tx, self.sealer.as_ref(), &edit.id).await?;
-
-        // Same rollback semantics as `insert`.
-        before_commit()?;
+        let done = self.reseal(&mut tx, &edit.id).await?;
+        let saved = connection_on(&mut tx, &edit.id).await?;
 
         tx.commit().await.map_err(RanchError::database)?;
-
-        self.get(&edit.id)
-            .await?
-            .ok_or(RanchError::ConnectionNotFound { id: edit.id })
+        self.forget(done);
+        Ok(saved)
     }
 
-    async fn duplicate(
-        &self,
-        source_id: &str,
-        new_id: &str,
-        copy_secrets: CopySecrets<'_>,
-    ) -> Result<Connection, RanchError> {
+    async fn duplicate(&self, source_id: &str, new_id: &str) -> Result<Connection, RanchError> {
         let now = self.now();
-        let mut tx = self.pool.begin().await.map_err(RanchError::database)?;
+        let mut tx = begin_immediate(&self.pool).await?;
 
         // Read source row.
         type SourceRow = (
@@ -554,14 +690,12 @@ impl ConnectionRepository for SqliteConnectionRepository {
             String,       // name
             String,       // backend
             String,       // endpoint (JSON, copied as stored)
-            String,       // keychain_ref
             bool,         // is_locked
             Option<bool>, // mcp_readonly
         );
         let source: Option<SourceRow> = sqlx::query_as(
             r#"
-            SELECT environment_id, name, backend, endpoint,
-                   keychain_ref, is_locked, mcp_readonly
+            SELECT environment_id, name, backend, endpoint, is_locked, mcp_readonly
             FROM connections WHERE id = ?
             "#,
         )
@@ -570,7 +704,7 @@ impl ConnectionRepository for SqliteConnectionRepository {
         .await
         .map_err(RanchError::database)?;
 
-        let (env_id, source_name, backend, endpoint, source_keychain_ref, is_locked, mcp_readonly) =
+        let (env_id, source_name, backend, endpoint, is_locked, mcp_readonly) =
             source.ok_or_else(|| RanchError::ConnectionNotFound {
                 id: source_id.to_string(),
             })?;
@@ -585,8 +719,8 @@ impl ConnectionRepository for SqliteConnectionRepository {
         let existing_names: Vec<String> = existing_names.into_iter().map(|(n,)| n).collect();
         let new_name = next_duplicate_name(&source_name, &existing_names);
 
-        // Insert new row pointing at the new keychain_ref (same convention:
-        // keychain_ref = id), with the source's backend and endpoint. And its
+        // Insert new row (its `keychain_ref` column is its id, as `insert`
+        // writes it), with the source's backend and endpoint. And its
         // protections: a copy of a production connection is just as locked,
         // and just as read-only for agents, as the original: the same
         // server behind the same credentials.
@@ -611,17 +745,12 @@ impl ConnectionRepository for SqliteConnectionRepository {
         .execute(&mut *tx)
         .await
         .map_err(RanchError::database)?;
-        reseal(&mut tx, self.sealer.as_ref(), new_id).await?;
-
-        copy_secrets(&source_keychain_ref)?;
+        let done = self.reseal(&mut tx, new_id).await?;
+        let copy = connection_on(&mut tx, new_id).await?;
 
         tx.commit().await.map_err(RanchError::database)?;
-
-        self.get(new_id)
-            .await?
-            .ok_or(RanchError::ConnectionNotFound {
-                id: new_id.to_string(),
-            })
+        self.forget(done);
+        Ok(copy)
     }
 
     async fn delete(&self, id: &str) -> Result<(), RanchError> {
@@ -653,7 +782,7 @@ impl ConnectionRepository for SqliteConnectionRepository {
         mcp_readonly: Option<bool>,
     ) -> Result<(), RanchError> {
         let now = self.now();
-        let mut tx = self.pool.begin().await.map_err(RanchError::database)?;
+        let mut tx = begin_immediate(&self.pool).await?;
         let result =
             sqlx::query("UPDATE connections SET mcp_readonly = ?, updated_at = ? WHERE id = ?")
                 .bind(mcp_readonly.map(|v| if v { 1_i64 } else { 0_i64 }))
@@ -665,8 +794,9 @@ impl ConnectionRepository for SqliteConnectionRepository {
         if result.rows_affected() == 0 {
             return Err(RanchError::ConnectionNotFound { id: id.to_string() });
         }
-        reseal(&mut tx, self.sealer.as_ref(), id).await?;
+        let done = self.reseal(&mut tx, id).await?;
         tx.commit().await.map_err(RanchError::database)?;
+        self.forget(done);
         Ok(())
     }
 
@@ -676,7 +806,7 @@ impl ConnectionRepository for SqliteConnectionRepository {
         environment_id: &str,
     ) -> Result<MoveConnectionResult, RanchError> {
         let now = self.now();
-        let mut tx = self.pool.begin().await.map_err(RanchError::database)?;
+        let mut tx = begin_immediate(&self.pool).await?;
 
         let current: Option<(String, i64)> =
             sqlx::query_as("SELECT environment_id, is_locked FROM connections WHERE id = ?")
@@ -724,8 +854,9 @@ impl ConnectionRepository for SqliteConnectionRepository {
         .execute(&mut *tx)
         .await
         .map_err(RanchError::database)?;
-        reseal(&mut tx, self.sealer.as_ref(), id).await?;
+        let done = self.reseal(&mut tx, id).await?;
         tx.commit().await.map_err(RanchError::database)?;
+        self.forget(done);
 
         Ok(MoveConnectionResult { newly_locked })
     }
@@ -767,7 +898,7 @@ impl ConnectionRepository for SqliteConnectionRepository {
         color_token: &str,
     ) -> Result<String, RanchError> {
         let now = self.now();
-        let mut tx = self.pool.begin().await.map_err(RanchError::database)?;
+        let mut tx = begin_immediate(&self.pool).await?;
 
         let group: Option<(String,)> = sqlx::query_as("SELECT id FROM groups WHERE id = ?")
             .bind(group_id)
@@ -829,7 +960,7 @@ impl ConnectionRepository for SqliteConnectionRepository {
         color_token: &str,
     ) -> Result<Vec<String>, RanchError> {
         let now = self.now();
-        let mut tx = self.pool.begin().await.map_err(RanchError::database)?;
+        let mut tx = begin_immediate(&self.pool).await?;
 
         let result =
             sqlx::query("UPDATE environments SET color_token = ?, updated_at = ? WHERE id = ?")
@@ -844,6 +975,7 @@ impl ConnectionRepository for SqliteConnectionRepository {
         }
 
         let mut newly_locked = Vec::new();
+        let mut done = Vec::new();
         if production::is_production(color_token) {
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT id FROM connections WHERE environment_id = ? AND is_locked = 0",
@@ -868,72 +1000,13 @@ impl ConnectionRepository for SqliteConnectionRepository {
                     .await
                     .map_err(RanchError::database)?;
             for (connection_id,) in all {
-                reseal(&mut tx, self.sealer.as_ref(), &connection_id).await?;
+                done.extend(self.reseal(&mut tx, &connection_id).await?);
             }
         }
 
         tx.commit().await.map_err(RanchError::database)?;
+        self.forget(done);
         Ok(newly_locked)
-    }
-
-    async fn delete_environment(&self, id: &str) -> Result<(), RanchError> {
-        let mut tx = self.pool.begin().await.map_err(RanchError::database)?;
-        let row: Option<(String,)> = sqlx::query_as("SELECT label FROM environments WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(RanchError::database)?;
-        let (label,) = row.ok_or_else(|| RanchError::EnvironmentNotFound { id: id.to_string() })?;
-
-        let (count,): (i64,) =
-            sqlx::query_as("SELECT count(*) FROM connections WHERE environment_id = ?")
-                .bind(id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(RanchError::database)?;
-        if count > 0 {
-            return Err(RanchError::InvalidInput {
-                reason: format!(
-                    "Environment \"{label}\" still contains {count} connection(s); move or remove them first"
-                ),
-            });
-        }
-
-        sqlx::query("DELETE FROM environments WHERE id = ?")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(RanchError::database)?;
-        tx.commit().await.map_err(RanchError::database)?;
-        Ok(())
-    }
-
-    async fn reorder_environments(
-        &self,
-        group_id: &str,
-        ordered_ids: &[String],
-    ) -> Result<(), RanchError> {
-        let current: Vec<(String,)> =
-            sqlx::query_as("SELECT id FROM environments WHERE group_id = ?")
-                .bind(group_id)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(RanchError::database)?;
-        validate_full_set("environment", &current, ordered_ids)?;
-
-        let mut tx = self.pool.begin().await.map_err(RanchError::database)?;
-        let now = self.now();
-        for (idx, id) in ordered_ids.iter().enumerate() {
-            sqlx::query("UPDATE environments SET display_order = ?, updated_at = ? WHERE id = ?")
-                .bind(idx as i64)
-                .bind(&now)
-                .bind(id)
-                .execute(&mut *tx)
-                .await
-                .map_err(RanchError::database)?;
-        }
-        tx.commit().await.map_err(RanchError::database)?;
-        Ok(())
     }
 
     // ── groups ──────────────────────────────────────────────────────────
@@ -1055,7 +1128,7 @@ impl ConnectionRepository for SqliteConnectionRepository {
             .map_err(RanchError::database)?;
         validate_full_set("group", &current, ordered_ids)?;
 
-        let mut tx = self.pool.begin().await.map_err(RanchError::database)?;
+        let mut tx = begin_immediate(&self.pool).await?;
         let now = self.now();
         for (idx, id) in ordered_ids.iter().enumerate() {
             sqlx::query("UPDATE groups SET display_order = ?, updated_at = ? WHERE id = ?")

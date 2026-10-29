@@ -361,7 +361,7 @@ function ConnectionSheetBody(
                         mcpReadonly === null
                           ? placedInProduction
                             ? "Production environments are read-only for agents unless you turn this off."
-                            : "Follows the default from Settings › Agents › Safety until you change it."
+                            : "Follows the default from Agents › Setup & safety until you change it."
                           : "Set for this connection. Writes that are allowed still ask for your approval."
                       }
                       checked={mcpReadonly ?? (placedInProduction || mcpReadonlyDefault)}

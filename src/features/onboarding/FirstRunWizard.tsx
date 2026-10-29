@@ -174,7 +174,8 @@ export function FirstRunWizard({ onClose }: FirstRunWizardProps) {
         {step === 2 && withAgents ? (
           <section className="flex flex-col gap-3">
             <p className="text-sm text-(--text2)">
-              Wire Ranch&apos;s MCP server into your agent clients, now or later from Settings.
+              Wire Ranch&apos;s MCP server into your agent clients, now or later from Agents › Setup
+              & safety.
             </p>
             {installerStatus.data ? (
               <div className="max-h-[50vh] overflow-y-auto pr-1">

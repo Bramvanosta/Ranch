@@ -30,7 +30,7 @@ The words Ranch uses, in the code, the UI and these docs, and what each one mean
 - **Lock**: a connection is locked (read-only) or unlocked. The lock applies to everyone; Production starts locked, and an unlock lasts until the app restarts.
 - **Agent read-only**: a per-connection switch that refuses every agent write, whatever the lock. On by default for Production.
 - **Approval**: a human's yes in the Ranch window to one agent write. The **approval mode** says which agent calls need one: none, writes, or everything. An approved call carries an **approval grant**, which the write pipeline trades once against the approved row.
-- **Seal**: an HMAC the app puts on what governs agents (approvals, safety settings, agent read-only, lock). `ranch-mcp` reads a missing or wrong seal as the strictest value.
+- **Seal**: an HMAC the app puts on what governs agents (approvals, safety settings, agent read-only, lock, where a connection points). `ranch-mcp` reads a missing or wrong seal as the strictest value.
 - **Caller**: who asks for a write, the user or an agent (with its client name and, perhaps, an approval). The audit log names them.
 - **Audit log**: every write and its outcome, who did it, on which connection. Written before the write is reported as done.
 - **Activity log**: every agent tool call, reads included. Best effort: a failure to log never fails the call.

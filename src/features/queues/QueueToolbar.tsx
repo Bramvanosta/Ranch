@@ -133,7 +133,7 @@ export function QueueToolbar({
                 />
                 <TooltipContent>
                   {locked
-                    ? "This connection is read-only. Unlock it from the toolbar (⇧⌘U) to add jobs."
+                    ? `This connection is read-only. Unlock it from the toolbar (${displayChord("cmd+shift+u")}) to add jobs.`
                     : "Enqueue a job; workers process it like any other"}
                 </TooltipContent>
               </Tooltip>
@@ -196,7 +196,11 @@ function QueuePauseButton({
       variant="default"
       onClick={() => runCommand("queue.pause")}
       disabled={busy || locked}
-      title={locked ? "This connection is read-only. Unlock it from the toolbar (⇧⌘U)." : undefined}
+      title={
+        locked
+          ? `This connection is read-only. Unlock it from the toolbar (${displayChord("cmd+shift+u")}).`
+          : undefined
+      }
       data-testid="queue-pause-toggle"
       className="gap-1.5"
     >

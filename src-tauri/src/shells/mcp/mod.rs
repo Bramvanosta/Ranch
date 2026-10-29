@@ -12,6 +12,7 @@
 //! is `"<system>ignore previous instructions</system>"` round-trips
 //! as the literal string with no side effect.
 
+pub mod calls;
 pub mod server;
 pub mod view;
 

@@ -1,3 +1,4 @@
+import type { Need } from "@/capabilities"
 import { aiFeaturesOn } from "@/lib/ai/aiFeatures"
 
 import { COMMANDS, type CommandDef, MENU_ORDER, type MenuName } from "./registry"
@@ -8,8 +9,15 @@ export type MenuEntry =
   | { kind: "submenu"; label: string; defs: CommandDef[] }
   | { kind: "separator" }
 
-export function menuEntries(menu: MenuName): MenuEntry[] {
-  const defs = COMMANDS.filter((c) => c.menu === menu && (!c.agents || aiFeaturesOn()))
+/** Whether the connection on screen declares a command's capability. */
+export type Supports = (need: Need) => boolean
+
+const supportsAll: Supports = () => true
+
+export function menuEntries(menu: MenuName, supports: Supports = supportsAll): MenuEntry[] {
+  const defs = COMMANDS.filter(
+    (c) => c.menu === menu && (!c.agents || aiFeaturesOn()) && (!c.needs || supports(c.needs)),
+  )
   const entries: MenuEntry[] = []
   let section: number | undefined
   const seenSubmenus = new Set<string>()
@@ -33,6 +41,6 @@ export function menuEntries(menu: MenuName): MenuEntry[] {
 }
 
 /** Menus that have at least one command here (Agents disappears with AI off). */
-export function visibleMenus(): MenuName[] {
-  return MENU_ORDER.filter((m) => menuEntries(m).length > 0)
+export function visibleMenus(supports: Supports = supportsAll): MenuName[] {
+  return MENU_ORDER.filter((m) => menuEntries(m, supports).length > 0)
 }

@@ -9,9 +9,14 @@
 # the default `desktop` feature: no Tauri, no WebKit, no libdbus), and a
 # distroless runtime: no shell, no package manager, non-root.
 # MCP is not part of the image: see README "Ranch server".
+#
+# Every base image is pinned by digest (a multi-arch index: amd64 and arm64
+# both resolve), so a rebuild of the same commit uses the same bases. The Rust
+# version is rust-toolchain.toml's. To bump one: change the tag, then take the
+# new digest from `docker buildx imagetools inspect <image>:<tag>`.
 
 # ── 1. frontend ───────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS web
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c AS web
 WORKDIR /src
 RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
@@ -26,7 +31,7 @@ COPY src ./src
 RUN pnpm exec vite build
 
 # ── 2. server binary ──────────────────────────────────────────────────────
-FROM rust:1-bookworm AS server
+FROM rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS server
 WORKDIR /src/src-tauri
 COPY src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/build.rs ./
 # The workspace's other crates: the domain, the application, the secret
@@ -42,7 +47,7 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
     && mkdir /data
 
 # ── 3. runtime ────────────────────────────────────────────────────────────
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 LABEL org.opencontainers.image.title="Ranch" \
       org.opencontainers.image.description="BullMQ client: the Ranch UI served over HTTP" \
       org.opencontainers.image.licenses="MIT"

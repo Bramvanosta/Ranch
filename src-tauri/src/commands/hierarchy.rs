@@ -47,35 +47,6 @@ pub async fn reorder_groups_inner(
     connections.reorder_groups(ordered_ids).await
 }
 
-#[derive(Debug, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct ReorderEnvironmentsArgs {
-    pub group_id: String,
-    pub ordered_ids: Vec<String>,
-}
-
-#[cfg(feature = "desktop")]
-#[tauri::command]
-#[specta::specta]
-pub async fn reorder_environments(
-    args: ReorderEnvironmentsArgs,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), RanchErrorDto> {
-    reorder_environments_inner(&args.group_id, &args.ordered_ids, state.repository.as_ref())
-        .await
-        .map_err(Into::into)
-}
-
-pub async fn reorder_environments_inner(
-    group_id: &str,
-    ordered_ids: &[String],
-    connections: &dyn ConnectionRepository,
-) -> Result<(), RanchError> {
-    connections
-        .reorder_environments(group_id, ordered_ids)
-        .await
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // change_environment_color
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,8 +63,9 @@ pub struct ChangeEnvironmentColorArgs {
 ///
 /// Turning an environment Production-colored locks its connections (the safe
 /// direction). Leaving Production never unlocks anything. Returns the ids of
-/// the connections whose lock flag changed so the caller can refresh their
-/// live actors.
+/// every connection in the environment, so the caller refreshes their live
+/// actors: each keeps the lock and the color it was spawned with, and the
+/// audit log takes the color from it.
 #[cfg(feature = "desktop")]
 #[tauri::command]
 #[specta::specta]
@@ -101,15 +73,16 @@ pub async fn change_environment_color(
     args: ChangeEnvironmentColorArgs,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), RanchErrorDto> {
-    let newly_locked = change_environment_color_inner(
+    let stale = change_environment_color_inner(
         &args.environment_id,
         &args.color_token,
         state.repository.as_ref(),
     )
     .await
     .map_err(RanchErrorDto::from)?;
-    // The actor caches its lock state at spawn; respawn so the lock applies now.
-    for connection_id in newly_locked {
+    // The actor caches its lock state and color at spawn; respawn so they
+    // apply now.
+    for connection_id in stale {
         state.connections.shutdown(&connection_id).await;
     }
     Ok(())
@@ -123,7 +96,14 @@ pub async fn change_environment_color_inner(
     validate_color_token(color_token)?;
     connections
         .recolor_environment(environment_id, color_token)
-        .await
+        .await?;
+    Ok(connections
+        .list()
+        .await?
+        .into_iter()
+        .filter(|c| c.environment_id == environment_id)
+        .map(|c| c.id)
+        .collect())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -173,27 +153,6 @@ pub async fn create_environment_inner(
         .await
 }
 
-/// Delete an environment, only when it holds no connection (emptied
-/// environments are kept around as drop targets; this is how they go away).
-#[cfg(feature = "desktop")]
-#[tauri::command]
-#[specta::specta]
-pub async fn delete_environment(
-    environment_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), RanchErrorDto> {
-    delete_environment_inner(&environment_id, state.repository.as_ref())
-        .await
-        .map_err(Into::into)
-}
-
-pub async fn delete_environment_inner(
-    environment_id: &str,
-    connections: &dyn ConnectionRepository,
-) -> Result<(), RanchError> {
-    connections.delete_environment(environment_id).await
-}
-
 #[derive(Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MoveConnectionArgs {
@@ -201,10 +160,10 @@ pub struct MoveConnectionArgs {
     pub environment_id: String,
 }
 
-/// Move a connection to another environment (any group). The connection id,
-/// its credentials and its live actor are untouched, except when the move
-/// enters Production: the connection is locked (the safe direction)
-/// and its actor respawned so the lock applies immediately.
+/// Move a connection to another environment (any group). The connection id
+/// and its credentials are untouched; entering Production locks it (the safe
+/// direction). Its actor is respawned, so the lock and the new environment's
+/// color apply at once.
 #[cfg(feature = "desktop")]
 #[tauri::command]
 #[specta::specta]
@@ -219,9 +178,9 @@ pub async fn move_connection(
     )
     .await
     .map_err(RanchErrorDto::from)?;
-    if result.newly_locked {
-        state.connections.shutdown(&args.connection_id).await;
-    }
+    // The actor keeps the color (for the audit log) and the lock it was
+    // spawned with: respawn it in its new environment.
+    state.connections.shutdown(&args.connection_id).await;
     Ok(result)
 }
 

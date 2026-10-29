@@ -150,7 +150,7 @@ export function JobDrillDown({
   const logCount = logs.data?.total ?? 0
 
   const requested: DrillDownTab | undefined = tab ? (LEGACY_TABS[tab] ?? tab) : undefined
-  // A failed job opens on its trace; a running one on its progress (13.5).
+  // A failed job opens on its trace; a running one on its progress.
   const defaultTab: DrillDownTab =
     job.state === "failed" || job.state === "active" ? "trace" : "data"
   const activeTab: DrillDownTab = requested ?? defaultTab

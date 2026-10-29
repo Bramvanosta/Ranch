@@ -14,6 +14,7 @@ import { useMemo } from "react"
 import { useJobStates } from "@/capabilities"
 import { useQueueMetrics } from "@/data/metrics/queries"
 import { useQueues } from "@/data/queues/queries"
+import { stateLabel } from "@/domain/jobStates"
 import { sumCounters } from "@/domain/sumCounters"
 import { RecentJobsCard, StateTotals } from "@/features/activity"
 import { StaleNotice } from "@/features/freshness"
@@ -51,7 +52,7 @@ export function QueueOverview({ connectionId, queueId, range, onRangeChange }: Q
               params={{ connectionId, queueId }}
               search={{ view: "jobs", state, page: 0 }}
               className="block h-full rounded-lg transition-colors hover:[&>div]:border-(--text)/30"
-              aria-label={`Open the ${state} jobs`}
+              aria-label={`Open the ${stateLabel(state, states)} jobs`}
             >
               {tile}
             </Link>

@@ -2,6 +2,7 @@ import { Link, useNavigate } from "@tanstack/react-router"
 import { SearchIcon, XIcon } from "lucide-react"
 import { useRef } from "react"
 
+import { displayChord } from "@/commands/chords"
 import { EnvDot } from "@/components/data/Env"
 import { Kbd } from "@/components/data/Kbd"
 import { useGroups } from "@/data/groups/queries"
@@ -93,10 +94,10 @@ export function SidebarFilterField() {
         </button>
       ) : (
         <Kbd
-          label="Command K opens the palette"
+          label={`${displayChord("cmd+k")} opens the palette`}
           className="absolute top-1/2 right-4 mt-1 -translate-y-1/2"
         >
-          ⌘K
+          {displayChord("cmd+k")}
         </Kbd>
       )}
     </div>

@@ -138,6 +138,15 @@ pub enum RanchError {
         tool: String,
     },
 
+    /// A process that checks seals (`ranch-mcp`) found a connection whose
+    /// endpoint, lock or agent setting the app did not seal: it opens
+    /// nothing, reads included, as its password would go wherever the row
+    /// points.
+    #[error(
+        "Ranch cannot verify connection \"{connection_name}\" (its settings were not saved by the Ranch app), so agents cannot use it. Ask the user to open Ranch, check this connection's settings and save them."
+    )]
+    ConnectionUnverified { connection_name: String },
+
     /// The human denied the agent's request in Ranch.
     #[error("Denied by the user in Ranch: `{tool}` was not executed.{}", reason.as_deref().map(|r| format!(" Reason: {r}")).unwrap_or_default())]
     ApprovalDenied {

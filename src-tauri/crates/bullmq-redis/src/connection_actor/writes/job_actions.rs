@@ -148,12 +148,12 @@ pub(super) async fn detect_job_state(
 
 /// Run `retry_jobs.lua` for `ids`: one [`MoveCode`] per id.
 ///
-/// Replaces a plain `MULTI/EXEC`, which pushed straight into `wait`:
-/// on a **paused** queue BullMQ's resume `RENAME`s `paused` over `wait`, so
-/// the retried job vanished from every list; idle workers were not woken
-/// (no marker); no `waiting` event; and it wrote `failedReason ""` /
-/// `attemptsMade 0`, fields BullMQ does not read that way. The script does
-/// what BullMQ's `reprocessJob` does.
+/// Not a plain `MULTI/EXEC` pushing straight into `wait`: on a **paused**
+/// queue BullMQ's resume `RENAME`s `paused` over `wait`, so the retried job
+/// would vanish from every list; idle workers would not be woken (no
+/// marker); no `waiting` event; and `failedReason ""` / `attemptsMade 0`
+/// are fields BullMQ does not read that way. The script does what BullMQ's
+/// `reprocessJob` does.
 pub(super) async fn run_retry_script(
     conn: &mut RedisConn,
     keys: KeyVariant,
@@ -179,8 +179,8 @@ pub(super) async fn run_retry_script(
 }
 
 /// Run `promote_jobs.lua` for `ids`. Same reason as
-/// [`run_retry_script`]: the old `MULTI/EXEC` pushed into `wait` whatever the
-/// queue's state, ignored the job's priority and woke nobody.
+/// [`run_retry_script`]: a plain `MULTI/EXEC` would push into `wait`
+/// whatever the queue's state, ignore the job's priority and wake nobody.
 pub(super) async fn run_promote_script(
     conn: &mut RedisConn,
     keys: KeyVariant,
@@ -222,7 +222,14 @@ pub(crate) async fn handle_retry_job(
 ) -> Result<JobActionResult, RanchError> {
     let queue = QueueRef::parse(args.queue_id.as_str())?;
     // 1. SAFETY GATE, first line. A locked connection never touches Redis.
-    authorize_write(state, caller, "retry_job").await?;
+    authorize_write(
+        state,
+        caller,
+        "retry_job",
+        AuditAction::RetryJob,
+        AuditTarget::job(&queue.id(), &queue.name, &args.job_id),
+    )
+    .await?;
 
     // 2. Open Redis + resolve keys.
     let mut conn = open_redis_for_actor(state, token).await?;
@@ -323,7 +330,14 @@ pub(crate) async fn handle_remove_job(
     token: &CancellationToken,
 ) -> Result<JobActionResult, RanchError> {
     let domain_queue = QueueRef::parse(args.queue_id.as_str())?;
-    authorize_write(state, caller, "remove_job").await?;
+    authorize_write(
+        state,
+        caller,
+        "remove_job",
+        AuditAction::RemoveJob,
+        AuditTarget::job(&domain_queue.id(), &domain_queue.name, &args.job_id),
+    )
+    .await?;
 
     let mut conn = open_redis_for_actor(state, token).await?;
     let keys = resolve_keys_for_queue(state, &mut conn, &domain_queue, token).await?;
@@ -465,7 +479,14 @@ pub(crate) async fn handle_promote_job(
     token: &CancellationToken,
 ) -> Result<JobActionResult, RanchError> {
     let queue = QueueRef::parse(args.queue_id.as_str())?;
-    authorize_write(state, caller, "promote_job").await?;
+    authorize_write(
+        state,
+        caller,
+        "promote_job",
+        AuditAction::PromoteJob,
+        AuditTarget::job(&queue.id(), &queue.name, &args.job_id),
+    )
+    .await?;
 
     let mut conn = open_redis_for_actor(state, token).await?;
     let keys = resolve_keys_for_queue(state, &mut conn, &queue, token).await?;

@@ -2,9 +2,11 @@
 //! a login in progress.
 //!
 //! A token is `base64url(json) "." base64url(HMAC-SHA256(key, purpose ‖ "." ‖
-//! json))`. Nothing is stored server-side: the cookie is the session, the MAC
-//! makes it unforgeable, `exp` makes it finite. The *purpose* is part of what
-//! is signed, so a login-state cookie can never be replayed as a session.
+//! json))`. The cookie is the session, the MAC makes it unforgeable, `exp`
+//! makes it finite. The *purpose* is part of what is signed, so a login-state
+//! cookie can never be replayed as a session. The server keeps only the ids
+//! of sessions signed out before they expired: such a cookie, copied
+//! somewhere, opens nothing.
 //!
 //! The key comes from `RANCH_SESSION_SECRET` (or, failing that,
 //! `RANCH_SECRET_KEY`); without either it is random and sessions end when the
@@ -71,6 +73,10 @@ impl SessionKey {
 /// Who is signed in. Kept small: it travels in every request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Session {
+    /// Random, per sign-in: what signing out revokes. A cookie from a
+    /// release without it has none, and is no session.
+    #[serde(default)]
+    pub id: String,
     pub sub: String,
     pub name: Option<String>,
     pub email: Option<String>,
@@ -80,7 +86,7 @@ pub struct Session {
 
 impl Session {
     pub fn is_live(&self) -> bool {
-        self.exp > now()
+        !self.id.is_empty() && self.exp > now()
     }
 }
 
@@ -148,6 +154,7 @@ mod tests {
 
     fn session(exp: u64) -> Session {
         Session {
+            id: "s1".into(),
             sub: "u1".into(),
             name: Some("Alex".into()),
             email: Some("alex@example.com".into()),
@@ -196,6 +203,17 @@ mod tests {
     fn sessions_expire() {
         assert!(session(now() + 60).is_live());
         assert!(!session(now() - 1).is_live());
+    }
+
+    #[test]
+    fn a_session_without_an_id_is_none() {
+        let (key, _) = SessionKey::from_secret(Some("s3cret"));
+        let legacy = serde_json::json!({
+            "sub": "u1", "name": null, "email": null, "exp": now() + 60,
+        });
+        let token = key.seal("session", &legacy);
+        let opened = key.open::<Session>("session", &token).unwrap();
+        assert!(!opened.is_live());
     }
 
     #[test]

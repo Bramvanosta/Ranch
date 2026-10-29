@@ -135,7 +135,7 @@ function SchedulerSheetForm({
       { connectionId, queueId, schedulerKey: scheduler.key },
       {
         onSuccess: () => {
-          toast.success(`Scheduler ${scheduler.key} deleted`)
+          toast.success(`Scheduler ${scheduler.key} removed`)
           onOpenChange(false)
         },
         onError: (err) => setServerError(err.message),
@@ -237,7 +237,13 @@ function SchedulerSheetForm({
               <Field
                 id="scheduler-tz"
                 label="Timezone"
-                hint={values.tz.trim() === "" ? "Empty = the worker's local time" : undefined}
+                hint={
+                  values.tz.trim() === ""
+                    ? editing && !scheduler?.tz
+                      ? "Read in each worker's local time today. Saved empty, it runs in UTC."
+                      : "Empty = UTC"
+                    : undefined
+                }
               >
                 <Input
                   id="scheduler-tz"
@@ -350,7 +356,7 @@ function SchedulerSheetForm({
                 !confirmingDelete && "text-(--state-failed-text) hover:text-(--state-failed-text)",
               )}
             >
-              {confirmingDelete ? "Delete for good, its pending job too" : "Delete"}
+              {confirmingDelete ? "Remove for good, its pending job too" : "Remove"}
             </Button>
           ) : (
             <span />

@@ -71,14 +71,25 @@ describe("state tabs", () => {
   it("the five headline states always, Prioritized and Paused when they hold jobs or are open", () => {
     const tabs = (counts: StateCounts, open: string) =>
       visibleStateTabs(BULLMQ_CAPABILITIES.jobStates, counts, open).map((t) => t.code)
+    // The states BullMQ does not count follow, always.
     expect(tabs(counters(), "waiting")).toEqual([
       "waiting",
       "active",
       "delayed",
       "failed",
       "completed",
+      "waitingChildren",
+      "stalled",
     ])
     expect(tabs(counters({ prioritized: 2 }), "waiting")).toContain("prioritized")
     expect(tabs(counters(), "paused")).toContain("paused")
+  })
+
+  it("a state the backend does not count keeps its tab once the counts are read", () => {
+    const codes = (counts: StateCounts | undefined) =>
+      visibleStateTabs(BULLMQ_CAPABILITIES.jobStates, counts, "waiting").map((t) => t.code)
+    expect(codes(counters())).toContain("waitingChildren")
+    expect(codes(counters({ waitingChildren: 0 }))).not.toContain("waitingChildren")
+    expect(codes(undefined)).not.toContain("waitingChildren")
   })
 })

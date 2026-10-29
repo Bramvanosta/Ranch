@@ -69,7 +69,11 @@ export const schedulersHandlers = {
       name: spec.jobName,
       pattern: spec.schedule.kind === "pattern" ? String(spec.schedule.pattern) : null,
       every: spec.schedule.kind === "every" ? Number(spec.schedule.everyMs) : null,
-      tz: spec.schedule.kind === "pattern" ? ((spec.schedule.tz as string | null) ?? null) : null,
+      // Like the core: a pattern is never stored without a zone, UTC by default.
+      tz:
+        spec.schedule.kind === "pattern"
+          ? (spec.schedule.tz as string | null)?.trim() || "UTC"
+          : null,
       offset: 0,
       iterationCount: existing?.iterationCount ?? 1,
       nextRun: runs[0] as number,

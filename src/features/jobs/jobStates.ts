@@ -8,7 +8,9 @@ import type { JobState, StateCounts } from "@/lib/tauri/bindings"
  * moves through them, then the backend's other states in its order, which
  * only appear while they hold jobs (or are the one open). Most queues
  * never use them, but a job added with a priority, or to a paused queue,
- * must be findable.
+ * must be findable. A state the backend does not count (BullMQ's
+ * `waitingChildren`) cannot say whether it holds jobs: its tab is always
+ * there once the counts are read.
  */
 export function visibleStateTabs(
   states: ReadonlyArray<JobStateInfo>,
@@ -17,7 +19,11 @@ export function visibleStateTabs(
 ): ReadonlyArray<JobStateInfo> {
   const headline = HEADLINE_STATES.flatMap((code) => states.filter((s) => s.code === code))
   const others = states.filter(
-    (s) => !isHeadline(s.code) && (s.code === open || countOf(counts, s.code) > 0),
+    (s) =>
+      !isHeadline(s.code) &&
+      (s.code === open ||
+        countOf(counts, s.code) > 0 ||
+        (counts !== undefined && !(s.code in counts))),
   )
   return [...headline, ...others]
 }

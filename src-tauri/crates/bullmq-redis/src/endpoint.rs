@@ -201,10 +201,16 @@ impl BackendSpec for BullmqRedisSpec {
 
     fn same_server(&self, saved: &Endpoint, new: &Endpoint) -> bool {
         match (RedisEndpoint::parse(saved), RedisEndpoint::parse(new)) {
-            // Host (case-insensitive), port, and TLS: a saved password
-            // never goes out in clear to a server that had TLS.
+            // The whole route: host (case-insensitive), port and TLS, the CA
+            // trusted for it, and each SSH hop on the way. A saved password
+            // never goes out in clear to a server that had TLS, to a server
+            // another CA vouches for, or through another bastion.
             (Ok(a), Ok(b)) => {
-                a.host.eq_ignore_ascii_case(b.host.trim()) && a.port == b.port && a.tls == b.tls
+                a.host.eq_ignore_ascii_case(b.host.trim())
+                    && a.port == b.port
+                    && a.tls == b.tls
+                    && same_ca(a.tls_custom_ca.as_deref(), b.tls_custom_ca.as_deref())
+                    && same_tunnel(a.ssh_tunnel.as_ref(), b.ssh_tunnel.as_ref())
             }
             _ => false,
         }
@@ -228,6 +234,37 @@ impl BackendSpec for BullmqRedisSpec {
         keychain: Arc<dyn SecretStore>,
     ) -> Result<ProbeReport, RanchError> {
         super::probe::probe(&RedisEndpoint::parse(endpoint)?, secrets, keychain).await
+    }
+}
+
+/// The same CA, or none on both sides. Compared as written: when in
+/// doubt, it is another one.
+fn same_ca(a: Option<&str>, b: Option<&str>) -> bool {
+    fn written(ca: Option<&str>) -> Option<&str> {
+        ca.map(str::trim).filter(|ca| !ca.is_empty())
+    }
+    written(a) == written(b)
+}
+
+/// The same SSH hops: bastion and jump host, each by host
+/// (case-insensitive), port and user.
+fn same_tunnel(a: Option<&SshTunnelConfig>, b: Option<&SshTunnelConfig>) -> bool {
+    fn same_hop(a: (&str, u16, &str), b: (&str, u16, &str)) -> bool {
+        a.0.trim().eq_ignore_ascii_case(b.0.trim()) && a.1 == b.1 && a.2.trim() == b.2.trim()
+    }
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            same_hop((&a.host, a.port, &a.user), (&b.host, b.port, &b.user))
+                && match (&a.jump_host, &b.jump_host) {
+                    (None, None) => true,
+                    (Some(x), Some(y)) => {
+                        same_hop((&x.host, x.port, &x.user), (&y.host, y.port, &y.user))
+                    }
+                    _ => false,
+                }
+        }
+        _ => false,
     }
 }
 
@@ -322,6 +359,56 @@ mod tests {
                 "{moved}"
             );
         }
+    }
+
+    #[test]
+    fn a_saved_secret_follows_the_ca_and_the_ssh_hops() {
+        let ca = "-----BEGIN CERTIFICATE-----\nlumen\n-----END CERTIFICATE-----";
+        let route = |tunnel: Option<SshTunnelConfig>, ca: Option<&str>| {
+            endpoint(json!({
+                "host": "redis.internal", "port": 6379, "tls": true,
+                "tlsCustomCa": ca, "sshTunnel": tunnel,
+            }))
+        };
+        let saved = route(Some(tunnel()), Some(ca));
+        let mut same = tunnel();
+        same.host = "Bastion.example.com".into();
+        same.auth = SshAuthMethod::KeyFile {
+            key_file_path: "/home/lumen/.ssh/id_ed25519".into(),
+        };
+        assert!(BullmqRedisSpec.same_server(&saved, &route(Some(same), Some(ca))));
+
+        let mut other_host = tunnel();
+        other_host.host = "evil.example.com".into();
+        let mut other_port = tunnel();
+        other_port.port = 2222;
+        let mut other_user = tunnel();
+        other_user.user = "root".into();
+        let mut with_jump = tunnel();
+        with_jump.jump_host = Some(ranch_domain::ssh_config::SshJumpHost {
+            host: "jump.example.com".into(),
+            port: 22,
+            user: "ubuntu".into(),
+        });
+        for moved in [
+            route(None, Some(ca)),
+            route(Some(other_host), Some(ca)),
+            route(Some(other_port), Some(ca)),
+            route(Some(other_user), Some(ca)),
+            route(Some(with_jump), Some(ca)),
+            route(Some(tunnel()), None),
+            route(
+                Some(tunnel()),
+                Some("-----BEGIN CERTIFICATE-----\nother\n-----END CERTIFICATE-----"),
+            ),
+        ] {
+            assert!(
+                !BullmqRedisSpec.same_server(&saved, &moved),
+                "{}",
+                moved.as_json()
+            );
+        }
+        assert!(!BullmqRedisSpec.same_server(&route(None, None), &saved));
     }
 
     #[test]

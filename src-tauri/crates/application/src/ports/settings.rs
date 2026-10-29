@@ -67,4 +67,12 @@ pub trait SettingsStore: Send + Sync {
     async fn safety(&self, setting: SafetySetting) -> Result<Sealed, RanchError>;
     /// Seal every safety setting as it stands: the first run with a key.
     async fn seal_all(&self) -> Result<(), RanchError>;
+    /// Write safety settings (`None` forgets one) and leave their seals as
+    /// they are, in one transaction: the values set when the key of the
+    /// seals was lost. A seal that no longer matches reads as the strictest
+    /// value in `ranch-mcp`, and these are the strictest.
+    async fn write_unsealed(
+        &self,
+        values: &[(SafetySetting, Option<&str>)],
+    ) -> Result<(), RanchError>;
 }

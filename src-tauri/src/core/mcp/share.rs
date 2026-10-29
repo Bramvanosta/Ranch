@@ -52,16 +52,16 @@ pub enum SharePolicy {
 }
 
 /// The policy in force. An unreadable setting shares names only: a broken
-/// database must never widen what agents see.
-/// A mode the app did not seal shares names only, too.
+/// database must never widen what agents see. A mode whose seal does not
+/// verify (written by someone else, or the key cannot be read) shares names
+/// only, too.
 pub async fn share_policy(settings: &dyn SettingsStore) -> SharePolicy {
     let mode = match settings.safety(SafetySetting::ShareMode).await {
         Ok(Sealed {
-            check: Check::Invalid,
-            ..
-        })
-        | Err(_) => return SharePolicy::NamesOnly,
-        Ok(Sealed { value, .. }) => value,
+            value,
+            check: Check::Valid,
+        }) => value,
+        _ => return SharePolicy::NamesOnly,
     };
     match mode.as_deref() {
         Some("everything") => SharePolicy::Everything,
@@ -72,7 +72,7 @@ pub async fn share_policy(settings: &dyn SettingsStore) -> SharePolicy {
             let raw = match settings.safety(SafetySetting::SharePatterns).await {
                 Ok(Sealed {
                     value: Some(raw),
-                    check: Check::Valid | Check::Unverifiable,
+                    check: Check::Valid,
                 }) => raw,
                 _ => DEFAULT_PATTERNS.to_string(),
             };

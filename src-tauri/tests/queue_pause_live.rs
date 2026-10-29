@@ -424,9 +424,9 @@ async fn pause_queue_on_locked_connection_returns_connection_locked_and_no_redis
         .unwrap();
     assert_eq!(paused_exists, 0);
 
-    // No pauseQueue audit row.
+    // One failure row: the log shows the refused attempt.
     let rows = audit_rows_for(&db, &conn_id, "pauseQueue").await;
-    assert_eq!(rows.len(), 0);
+    assert_eq!(rows.len(), 1);
 
     cleanup_queue(&mut rconn, queue).await;
 }

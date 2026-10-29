@@ -1,3 +1,4 @@
+import { displayChord } from "@/commands/chords"
 import type { Job } from "@/lib/tauri/bindings"
 import { jobSelectionKey, useJobSelectionStore } from "@/stores/useJobSelectionStore"
 
@@ -62,7 +63,7 @@ export function SelectPageCheckbox({
       }}
       onChange={onToggle}
       aria-label={label}
-      title={state === "all" ? label : `${label} (⌘A)`}
+      title={state === "all" ? label : `${label} (${displayChord("cmd+a")})`}
       data-testid="job-list-select-page"
       className="size-4 shrink-0 rounded border border-(--line)"
     />

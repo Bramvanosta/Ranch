@@ -63,7 +63,7 @@ Declare them once, as a `static` your spec's `capabilities()` and every backend'
 
 What you declare is all the UI and the agents learn of your kind, before any connection is opened:
 
-- The front end reads it through `src/capabilities/`: tabs, menu items, palette entries and actions you do not declare are absent, and your states are the queue's state tabs, pills and totals, with your labels and tones. The common lifecycle's headline states always have a tab; yours appear while they hold jobs.
+- The front end reads it through `src/capabilities/`: tabs, menu items, palette entries and actions you do not declare are absent, and your states are the queue's state tabs, pills and totals, with your labels and tones. The common lifecycle's headline states always have a tab; yours appear while they hold jobs, and always when you leave them out of the counts.
 - The MCP server lists a tool only when a kind it serves declares the capability the tool needs (its operation's in `crates/application/src/catalogue.rs`), and `list_jobs` takes the state codes the kinds describe.
 
 Declare what the kind can do, not what one server allows: a Redis that refuses `CLIENT LIST` still declares `workers.list`, and the call says it cannot list them.

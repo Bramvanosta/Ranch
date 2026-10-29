@@ -12,7 +12,7 @@ export interface NotificationThreshold {
   queueName?: string
   /** Counter to watch. */
   metric: ThresholdMetric
-  /** Cross-direction: only "gt" supported in v1. */
+  /** Cross direction: only "gt" (above the value). */
   op: "gt"
   /** Threshold value (e.g. 10). */
   value: number

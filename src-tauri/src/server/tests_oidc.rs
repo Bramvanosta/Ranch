@@ -350,13 +350,27 @@ async fn the_whole_sign_in_then_the_session_opens_the_api_and_sign_out_closes_it
     let logout = h
         .app
         .clone()
-        .oneshot(Request::get("/auth/logout").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/auth/logout")
+                .header(header::COOKIE, &session_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert!(logout.headers()[header::SET_COOKIE]
         .to_str()
         .unwrap()
         .contains("Max-Age=0"));
+
+    // Signed out, the cookie opens nothing, even if a copy of it survived.
+    let replayed = h
+        .app
+        .clone()
+        .oneshot(api_call(Some(&session_cookie)))
+        .await
+        .unwrap();
+    assert_eq!(replayed.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

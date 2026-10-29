@@ -23,12 +23,13 @@ import { COMMANDS } from "@/commands/registry"
 import { Kbd } from "@/components/data/Kbd"
 import { useConnections } from "@/data/connections/queries"
 import { useGroups } from "@/data/groups/queries"
-import { retryJob } from "@/data/jobs/mutations"
+import { useRetryJob } from "@/data/jobs/mutations"
 import { useJobIdSearch } from "@/data/jobs/queries"
 import { queueKeys } from "@/data/queues/keys"
 import { paletteRecents } from "@/data/settings/settings"
 import { readSettingOrDefault, writeSetting } from "@/data/settings/useSetting"
 import { hostPort } from "@/domain/bullmqEndpoint"
+import { stateLabel } from "@/domain/jobStates"
 import { countOf } from "@/domain/stateCounts"
 import { useCopyToClipboard } from "@/hooks/useCopyToClipboard"
 import { useKeyboardShortcut } from "@/hooks/useKeyboardShortcut"
@@ -222,6 +223,8 @@ export function CommandPalette() {
   const jobSearch = useJobIdSearch(currentConnectionId ?? null, jobId, open)
   // A job's actions are those its connection's backend declares.
   const capabilitiesOf = useCapabilityLookup()
+  // Toasts the outcome and refreshes the job and its lists.
+  const retry = useRetryJob()
   const jobItems: PaletteItem[] = useMemo(
     () =>
       (jobSearch.data ?? []).map(({ connectionId, queueId, job }) => {
@@ -231,7 +234,7 @@ export function CommandPalette() {
           kind: "job" as const,
           id: `job:${connectionId}:${queueId}:${job.jobRef.id}`,
           label: `${job.name || "(unnamed)"} #${job.jobRef.id}`,
-          hint: `${job.state} · ${job.jobRef.queueName}${conn ? ` · ${conn.name} · ${conn.envLabel}` : ""}`,
+          hint: `${stateLabel(job.state, capabilitiesOf(connectionId).jobStates)} · ${job.jobRef.queueName}${conn ? ` · ${conn.name} · ${conn.envLabel}` : ""}`,
           to: route,
           actions: [
             { id: "open", label: "Open", run: () => go(route) },
@@ -240,12 +243,13 @@ export function CommandPalette() {
               label: "Open in New Window",
               run: () => void openRouteOrSay(route, { tab: false }),
             },
-            ...(capabilitiesOf(connectionId).can("jobActions.single")
+            // Only a failed job is retried.
+            ...(job.state === "failed" && capabilitiesOf(connectionId).can("jobActions.single")
               ? [
                   {
                     id: "retry",
                     label: "Retry",
-                    run: () => void retryJob({ connectionId, queueId, jobId: job.jobRef.id }),
+                    run: () => retry.mutate({ connectionId, queueId, jobId: job.jobRef.id }),
                   },
                 ]
               : []),
@@ -253,7 +257,7 @@ export function CommandPalette() {
           ],
         }
       }),
-    [jobSearch.data, connectionsQuery.data, go, copy, capabilitiesOf],
+    [jobSearch.data, connectionsQuery.data, go, copy, capabilitiesOf, retry.mutate],
   )
 
   const grouped = useMemo(
@@ -413,7 +417,7 @@ export function CommandPalette() {
           <Kbd label="Tab">⇥</Kbd> actions
         </span>
         <span className="ml-auto">
-          <Kbd label="Command K">⌘K</Kbd> anywhere
+          <Kbd label={displayChord("cmd+k")}>{displayChord("cmd+k")}</Kbd> anywhere
         </span>
       </div>
     </PaletteDialog>

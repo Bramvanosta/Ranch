@@ -1,8 +1,8 @@
 import { Link } from "@tanstack/react-router"
 import { ScanIcon, XIcon } from "lucide-react"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-
 import { useJobStates } from "@/capabilities"
+import { displayChord } from "@/commands/chords"
 import { useCommandHandler } from "@/commands/handlers"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
@@ -118,7 +118,7 @@ export function MapView({
         >
           <ScanIcon className="size-3.5" aria-hidden="true" />
           {fit ? "Actual size" : "Fit"}
-          <span className="font-tabular text-xs text-(--text2)">⌘0</span>
+          <span className="font-tabular text-xs text-(--text2)">{displayChord("cmd+0")}</span>
         </Button>
         <Legend />
       </div>

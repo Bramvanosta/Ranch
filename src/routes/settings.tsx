@@ -14,7 +14,7 @@ import { isSettingsWindow, SETTINGS_TABS, type SettingsTab } from "@/lib/windows
 export const Route = createFileRoute("/settings")({
   component: SettingsRoute,
   validateSearch: z.object({
-    // The old Notifications page is Alerts now; Agents is AI features (16.1).
+    // Older links: `notifications` opens Alerts, `agents` opens AI features.
     tab: z
       .preprocess(
         (v) => (v === "notifications" ? "alerts" : v === "agents" ? "ai" : v),

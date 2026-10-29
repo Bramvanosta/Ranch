@@ -10,11 +10,13 @@ import type { Connection, FailureCause, Job, Queue, QueueId } from "@/lib/tauri/
  * What Ask AI hands to an agent: the target, its last
  * error and stack, its last logs, the queue's state and a `ranch://` link,
  * then how to dig further with the Ranch MCP tools. Job data goes through
- * the `share_for_agents` policy first, as it would over MCP.
+ * the `share_for_agents` policy first, as it would over MCP. Connections and
+ * queues are named with the `connectionId` and `queueId` those tools take.
  */
 export type AskTarget =
   | { kind: "job"; connection: Connection; job: Job }
-  | { kind: "cause"; connection: Connection; cause: FailureCause; queueName?: string }
+  /** The queues it names are those of `cause.jobs`: narrow it to one queue first. */
+  | { kind: "cause"; connection: Connection; cause: FailureCause }
   | { kind: "connection"; connection: Connection }
   /** A prompt already written (a note's follow-up). */
   | { kind: "prompt"; connection: Connection | null; prompt: string }
@@ -36,7 +38,7 @@ const ranchLink = (connectionId: string, queue?: QueueId, jobId?: string) =>
   `ranch://${encodeURIComponent(connectionId)}${queue ? `/queues/${encodeURIComponent(queue)}` : ""}${jobId ? `/jobs/${encodeURIComponent(jobId)}` : ""}`
 
 const where = (c: Connection) =>
-  `connection "${c.name}" (${c.envLabel}, ${endpointLine(c) ?? c.backend})`
+  `connection "${c.name}" (connectionId ${c.id}, ${c.envLabel}, ${endpointLine(c) ?? c.backend})`
 
 /** The job data as an agent may see it. */
 const shared = shareForAgents
@@ -98,7 +100,7 @@ export async function buildPrompt(target: AskTarget): Promise<string> {
       const stack = job.stacktrace[0]?.slice(0, STACK_CAP)
       const sharedLogs = (data.logs as string[] | undefined) ?? []
       return [
-        `Help me understand BullMQ job ${queue}#${job.jobRef.id} on ${where(connection)}.`,
+        `Help me understand BullMQ job ${queue}#${job.jobRef.id} (queueId ${job.jobRef.queueId}, jobId ${job.jobRef.id}) on ${where(connection)}.`,
         UNTRUSTED_NOTE,
         "",
         untrusted("Job name", job.name),
@@ -118,12 +120,14 @@ export async function buildPrompt(target: AskTarget): Promise<string> {
     }
     case "cause": {
       const { connection, cause } = target
-      const queues = target.queueName ? [target.queueName] : cause.queueNames
+      // The queues of its jobs, by id: two prefixes can hold the same name.
+      const queues = [...new Map(cause.jobs.map((j) => [j.queueId, j.queueName])).entries()]
       const states = await Promise.all(
         queues
           .slice(0, 5)
           .map(
-            async (name) => `- ${name}: ${await queueState(connection.id, (q) => q.name === name)}`,
+            async ([id, name]) =>
+              `- ${name} (queueId ${id}): ${await queueState(connection.id, (q) => q.id === id)}`,
           ),
       )
       const signature = cause.signature === "" ? "(no failure reason recorded)" : cause.signature
@@ -141,7 +145,7 @@ export async function buildPrompt(target: AskTarget): Promise<string> {
           .join(", ")}`,
         "Queues:",
         ...states,
-        `Open in Ranch: ${ranchLink(connection.id, queues.length === 1 ? cause.jobs[0]?.queueId : undefined)}`,
+        `Open in Ranch: ${ranchLink(connection.id, queues.length === 1 ? queues[0]?.[0] : undefined)}`,
         "",
         ...FOOTER,
       ].join("\n")
@@ -159,7 +163,7 @@ export async function buildPrompt(target: AskTarget): Promise<string> {
         "Queues:",
         ...queues.map(
           (q) =>
-            `- ${q.name}: ${q.isPaused ? "paused" : "running"}, waiting ${countOf(q.counts, "waiting")}, active ${countOf(q.counts, "active")}, failed ${countOf(q.counts, "failed")}`,
+            `- ${q.name} (queueId ${q.id}): ${q.isPaused ? "paused" : "running"}, waiting ${countOf(q.counts, "waiting")}, active ${countOf(q.counts, "active")}, failed ${countOf(q.counts, "failed")}`,
         ),
         top.length > 0 ? "Main failure causes:" : "No failures.",
         ...top,

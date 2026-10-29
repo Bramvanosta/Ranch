@@ -13,7 +13,7 @@ import {
 } from "@/test/renderWithProviders"
 
 import { can, common, descriptorOf } from "./descriptor"
-import { IfCapable, useCapabilities, useJobStates } from "./index"
+import { useCapabilities, useJobStates } from "./index"
 
 /** A kind that keeps jobs and parks them, and does nothing with schedulers. */
 const PARKING: CapabilityDescriptor = {
@@ -96,17 +96,18 @@ describe("useCapabilities", () => {
   })
 
   it("shows what is declared and nothing else", () => {
-    renderWithProviders(
-      <>
-        <IfCapable connectionId="p1" need="jobActions.single">
-          <button type="button">Retry</button>
-        </IfCapable>
-        <IfCapable connectionId="p1" need="schedules.write">
-          <button type="button">New scheduler</button>
-        </IfCapable>
-      </>,
-      { client: clientWith(aConnection({ id: "p1", backend: "parking" })) },
-    )
+    function Actions() {
+      const { can } = useCapabilities("p1")
+      return (
+        <>
+          {can("jobActions.single") ? <button type="button">Retry</button> : null}
+          {can("schedules.write") ? <button type="button">New scheduler</button> : null}
+        </>
+      )
+    }
+    renderWithProviders(<Actions />, {
+      client: clientWith(aConnection({ id: "p1", backend: "parking" })),
+    })
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "New scheduler" })).not.toBeInTheDocument()
   })

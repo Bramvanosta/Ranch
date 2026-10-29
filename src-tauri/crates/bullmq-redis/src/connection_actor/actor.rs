@@ -410,7 +410,7 @@ pub(super) struct ActorState {
     /// Cached BullMQ schema. None until first successful detection.
     /// Re-attempted on each `ListQueues` call until cached, then
     /// frozen for the actor's lifetime; see module docs for the
-    /// invalidation rationale (v1: re-add the connection to refresh).
+    /// invalidation rationale (re-adding the connection refreshes it).
     pub(super) cached_schema: Arc<std::sync::Mutex<Option<BullmqSchema>>>,
     /// read-only lock state. Initialized from
     /// `cfg.initial_lock_state` at spawn (which the registry derived

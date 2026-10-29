@@ -138,6 +138,11 @@ impl From<RanchError> for RanchErrorDto {
                 message: e.to_string(),
                 doc_url: None,
             },
+            e @ RanchError::ConnectionUnverified { .. } => RanchErrorDto {
+                kind: "connectionUnverified".to_string(),
+                message: e.to_string(),
+                doc_url: None,
+            },
             e @ (RanchError::ApprovalDenied { .. }
             | RanchError::ApprovalTimeout { .. }
             | RanchError::HostUnavailable { .. }
@@ -235,6 +240,17 @@ mod tests {
         assert_eq!(dto.kind, "connectionLocked");
         assert!(dto.message.contains("Acme · prod"));
         assert!(dto.message.contains("cmd-shift-U"));
+        assert!(dto.doc_url.is_none());
+    }
+
+    #[test]
+    fn connection_unverified_maps_to_its_kind_and_names_the_connection() {
+        let dto: RanchErrorDto = RanchError::ConnectionUnverified {
+            connection_name: "lumen-api prod".into(),
+        }
+        .into();
+        assert_eq!(dto.kind, "connectionUnverified");
+        assert!(dto.message.contains("\"lumen-api prod\""));
         assert!(dto.doc_url.is_none());
     }
 

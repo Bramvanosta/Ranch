@@ -3,8 +3,9 @@ import { useAiEnabled } from "@/lib/ai/aiFeatures"
 import { toAccelerator } from "./chords"
 
 import { type CommandState, commandState, runCommand, useCommandHandlers } from "./handlers"
-import { type MenuEntry, menuEntries, visibleMenus } from "./menuModel"
+import { type MenuEntry, menuEntries, type Supports, visibleMenus } from "./menuModel"
 import type { MenuName } from "./registry"
+import { useMenuSupports } from "./useMenuSupports"
 
 type MenuApi = typeof import("@tauri-apps/api/menu")
 type NativeItem = Awaited<ReturnType<MenuApi["MenuItem"]["new"]>>
@@ -13,7 +14,8 @@ type NativeItem = Awaited<ReturnType<MenuApi["MenuItem"]["new"]>>
  * The desktop app's native menu bar, built
  * from the command registry with `@tauri-apps/api/menu` and set as the app
  * menu (on Linux it attaches to each window). Clicks and accelerators run the
- * registry command; items grey out and relabel as handlers come and go.
+ * registry command; items grey out and relabel as handlers come and go, and
+ * those the connection on screen does not declare are left out.
  *
  * The platform's own items (About, Hide, Quit, Undo…Select All, Minimize,
  * Zoom, Full Screen, Close) are the predefined ones, so they behave natively.
@@ -27,10 +29,14 @@ export function NativeMenuBar() {
   // Turning AI features off or on rebuilds the menu bar
   // (the Agents menu comes and goes).
   const aiOn = useAiEnabled()
+  // Rebuilt when the commands left out change (another kind of backend).
+  const { supports, key: leftOut } = useMenuSupports()
+  const supportsRef = useRef(supports)
+  supportsRef.current = supports
 
   // The menu bar is the app's, not a window's: each window
   // installs its own menu (its own handlers) when it gets the focus.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: rebuilt when AI features change
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rebuilt when AI features or the commands left out change
   useEffect(() => {
     let cancelled = false
     let unlisten: (() => void) | undefined
@@ -38,7 +44,7 @@ export function NativeMenuBar() {
       const api = await import("@tauri-apps/api/menu")
       items.current.clear()
       shown.current.clear()
-      const menu = await buildMenu(api, items.current, shown.current)
+      const menu = await buildMenu(api, items.current, shown.current, supportsRef.current)
       if (!cancelled) await menu.setAsAppMenu()
     }
     void install()
@@ -53,7 +59,7 @@ export function NativeMenuBar() {
       cancelled = true
       unlisten?.()
     }
-  }, [aiOn])
+  }, [aiOn, leftOut])
 
   // Grey out / relabel: only the items whose state changed, once things settle.
   useEffect(() => {
@@ -78,6 +84,7 @@ async function buildMenu(
   api: MenuApi,
   items: Map<string, NativeItem>,
   shown: Map<string, CommandState>,
+  supports: Supports,
 ) {
   const { Menu, MenuItem, PredefinedMenuItem, Submenu } = api
   const sep = () => PredefinedMenuItem.new({ item: "Separator" })
@@ -143,12 +150,12 @@ async function buildMenu(
   }
 
   const submenus = await Promise.all(
-    visibleMenus().map(async (name) =>
+    visibleMenus(supports).map(async (name) =>
       Submenu.new({
         text: name,
         items: [
           ...((await before[name]?.()) ?? []),
-          ...(await entries(menuEntries(name))),
+          ...(await entries(menuEntries(name, supports))),
           ...((await after[name]?.()) ?? []),
         ] as never[],
       }),

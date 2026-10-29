@@ -71,7 +71,7 @@
   },
   {
     "name": "annotate_cause",
-    "description": "Attach your diagnosis to a failure cause so the user sees it next to the failures in Ranch: `text` (what is wrong, why) and `steps` (what to do, in order). Identify the cause by `signature` (from `list_failure_causes`) and one of its queues. Needs no approval (it changes no queue state) but is refused on connections that are read-only for agents.",
+    "description": "Attach your diagnosis to a failure cause so the user sees it next to the failures in Ranch: `text` (what is wrong, why) and `steps` (what to do, in order). Identify the cause by `signature` (from `list_failure_causes`) and one of its queues. Needs no approval (it changes no queue state) unless the user asks for approval of every call, and is refused on connections that are read-only for agents.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "A resolution note on one cause.",
@@ -639,7 +639,7 @@
   },
   {
     "name": "list_queues",
-    "description": "List BullMQ queues on a connection. Each queue carries `counts`: jobs per state code (`waiting`, `active`, `completed`, `failed`, `delayed`, `prioritized`, `paused`); a state that is absent holds no job.",
+    "description": "List BullMQ queues on a connection. Each queue carries `counts`: jobs per state code (`waiting`, `active`, `completed`, `failed`, `delayed`, `prioritized`, `paused`); a state that is absent was not counted (BullMQ's `waitingChildren`): list its jobs to know.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -911,7 +911,7 @@
   },
   {
     "name": "upsert_scheduler",
-    "description": "Create a job scheduler, or change an existing one (same schedulerId): jobName + either a cron `pattern` (5 fields, or 6 with seconds first; optional IANA `tz`) or `everyMs` (fixed interval, min 1000), and an optional JSON `data` template. Workers of the queue run the jobs it produces. Returns the next run and the id of the pending job.",
+    "description": "Create a job scheduler, or change an existing one (same schedulerId): jobName + either a cron `pattern` (5 fields, or 6 with seconds first; optional IANA `tz`, UTC when omitted) or `everyMs` (fixed interval, min 1000), and an optional JSON `data` template. Workers of the queue run the jobs it produces. Returns the next run and the id of the pending job.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "`upsert_scheduler`: exactly one of `pattern` / `everyMs`.",
@@ -955,7 +955,7 @@
         },
         "tz": {
           "default": null,
-          "description": "IANA timezone the pattern is read in (default UTC), e.g. `Europe/Paris`.",
+          "description": "IANA timezone the pattern is read in, e.g. `Europe/Paris`. Omitted: UTC, stored as such.",
           "type": [
             "string",
             "null"
