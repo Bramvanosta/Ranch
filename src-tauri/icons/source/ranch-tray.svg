@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="1 1 14 14">
+  <!-- Menu bar icon: the three bars of the tile, black on transparent. macOS
+       draws it as a template image, in the menu bar's own colour. -->
+  <rect x="6" y="4" width="7" height="2" rx="1" fill="#000"/>
+  <rect x="3" y="7" width="7" height="2" rx="1" fill="#000"/>
+  <rect x="3" y="10" width="7" height="2" rx="1" fill="#000"/>
+</svg>
