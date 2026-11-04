@@ -27,6 +27,7 @@ import { dirname, join, relative, resolve } from "node:path"
 import { after, describe, test } from "node:test"
 import YAML from "yaml"
 
+import { PINS } from "./fixtures/action-pins.mjs"
 import { fakeBin } from "./fixtures/fake-tools.mjs"
 import { SETS } from "./release-preflight.mjs"
 
@@ -49,14 +50,6 @@ const sha256 = (data) => createHash("sha256").update(data).digest("hex")
 /** A GitHub expression as the workflow writes it: `${{ <e> }}`. */
 const expr = (e) => `\${{ ${e} }}`
 
-/** Every action, pinned to the commit of an exact release (resolved read-only: gh api repos/<o>/<r>/git/ref/tags/<tag>). */
-const PINS = {
-  "actions/checkout": ["fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09", "v5.1.0"],
-  "actions/setup-node": ["a0853c24544627f65ddf259abe73b1d18a591444", "v5.0.0"],
-  "actions/cache": ["0057852bfaa89a56745cba8c7296529d2fc39830", "v4.3.0"],
-  "actions/upload-artifact": ["b7c566a772e6b6bfb58ed0dc250532a479d7789f", "v6.0.0"],
-  "actions/download-artifact": ["018cc2cf5baa6db3ef3c5f8a56943fffe632ef53", "v6.0.0"],
-}
 /** The only steps that may hold a secret's value, and which ones. */
 const SECRET_STEPS = {
   "sign-macos › Signing material": [
@@ -381,6 +374,18 @@ const RULES = {
     return p
   },
 
+  "the build jobs restore no cache: every package fetched afresh against the lockfile": (wf) =>
+    BUILD_JOBS.flatMap((name) => {
+      const steps = jobsOf(wf)[name].steps
+      const pnpm = steps.filter((s) => s.uses === "./.github/actions/pnpm")
+      const p = steps
+        .filter((s) => s.uses?.startsWith("actions/cache@"))
+        .map(() => `${name}: a cache`)
+      if (pnpm.length !== 1 || pnpm[0].with?.cache !== "false")
+        p.push(`${name}: the pnpm store cached`)
+      return p
+    }),
+
   "each job waits for the one before": (wf) => {
     const want = {
       release: undefined,
@@ -461,6 +466,9 @@ const MUTATIONS = {
   "the build jobs make no updater artifact, no DMG": (wf) => {
     const s = step(wf, "build-macos", "Build the app")
     s.run = s.run.replace("--bundles app --config", "--bundles app,dmg --config")
+  },
+  "the build jobs restore no cache: every package fetched afresh against the lockfile": (wf) => {
+    delete wf.jobs["build-linux"].steps.find((s) => s.uses === "./.github/actions/pnpm").with
   },
   "each job waits for the one before": (wf) => {
     wf.jobs["sign-macos"].needs = ["release"]
