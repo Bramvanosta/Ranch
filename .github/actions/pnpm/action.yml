@@ -3,9 +3,6 @@
 name: Node and pnpm
 description: Node 24, pnpm through corepack, the pnpm store cached (unless `cache` is "false"), `pnpm install --frozen-lockfile`.
 inputs:
-  setup-node:
-    description: Install Node 24 first. "false" in a container that already has Node.
-    default: "true"
   cache:
     description: >-
       Restore and save the pnpm store. "false" in release builds: a store restored from
@@ -14,8 +11,9 @@ inputs:
 runs:
   using: composite
   steps:
-    - if: inputs.setup-node == 'true'
-      uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+    # Even in a container that has a Node of its own: Playwright's image changes
+    # its Node under the same tag (corepack went with it).
+    - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
       with:
         node-version: 24
         # setup-node would cache with pnpm before corepack has installed it.

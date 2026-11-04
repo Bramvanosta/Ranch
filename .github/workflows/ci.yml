@@ -99,8 +99,6 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/pnpm
-        with:
-          setup-node: "false"
       - name: Overflow check
         run: pnpm check:overflow
         env:

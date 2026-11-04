@@ -1,4 +1,3 @@
-# BullMQ seeder runs `npm install` inside the container; ignore the
-# generated install output so it doesn't pollute git.
+# The seeder installs inside the container; its install output stays out of
+# git. package-lock.json is committed: CI installs exactly it (npm ci).
 node_modules/
-package-lock.json
