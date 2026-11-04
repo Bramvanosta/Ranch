@@ -386,6 +386,38 @@ const RULES = {
       return p
     }),
 
+  "attestations: the OIDC token in attach only, minted after the files are attached, for what ships":
+    (wf) => {
+      const p = []
+      for (const [name, j] of Object.entries(jobsOf(wf))) {
+        const want =
+          name === "attach"
+            ? { contents: "write", "id-token": "write", attestations: "write" }
+            : null
+        const has = Object.fromEntries(
+          Object.entries(j.permissions ?? {}).filter(
+            ([k]) => k === "id-token" || k === "attestations",
+          ),
+        )
+        if (want && JSON.stringify(j.permissions) !== JSON.stringify(want))
+          p.push(`attach: ${JSON.stringify(j.permissions)}`)
+        if (!want && Object.keys(has).length) p.push(`${name}: ${JSON.stringify(has)}`)
+      }
+      const steps = jobsOf(wf).attach?.steps ?? []
+      const names = steps.map((s) => s.name ?? s.uses)
+      const attest = steps.findIndex((s) => s.uses?.startsWith("actions/attest-build-provenance@"))
+      const subjects = names.indexOf("The files to attest")
+      if (attest < 0 || !(names.indexOf("Attach to the release") < subjects && subjects < attest))
+        p.push("attest after the attach step")
+      if (steps[attest]?.with?.["subject-checksums"] !== `${expr("runner.temp")}/subjects.txt`)
+        p.push("the subjects are not the attached files")
+      if (!/grep -v '\\\.sig\$' > "\$RUNNER_TEMP\/subjects\.txt"/.test(steps[subjects]?.run ?? ""))
+        p.push("the subjects keep the signatures")
+      if (stepsOf(wf).filter((s) => s.uses?.startsWith("actions/attest")).length !== 1)
+        p.push("one attestation step")
+      return p
+    },
+
   "each job waits for the one before": (wf) => {
     const want = {
       release: undefined,
@@ -470,6 +502,10 @@ const MUTATIONS = {
   "the build jobs restore no cache: every package fetched afresh against the lockfile": (wf) => {
     delete wf.jobs["build-linux"].steps.find((s) => s.uses === "./.github/actions/pnpm").with
   },
+  "attestations: the OIDC token in attach only, minted after the files are attached, for what ships":
+    (wf) => {
+      wf.jobs["sign-macos"].permissions["id-token"] = "write"
+    },
   "each job waits for the one before": (wf) => {
     wf.jobs["sign-macos"].needs = ["release"]
   },
@@ -880,6 +916,45 @@ if (argv[1] === "download") for (const p of opt("--pattern")) for (const f of fs
         ["scripts/publish-update.mjs", "v0.5.0", "--platforms", "linux-x86_64"],
         ["scripts/publish-update.mjs", "v0.5.0", "--platforms", "darwin-aarch64,darwin-x86_64"],
       ],
+    )
+  })
+
+  test("attach › The files to attest: every file of both sums but the signatures, as attached", () => {
+    const s = step(WF, "attach", "The files to attest")
+    const temp = fresh("attest")
+    const sums = {
+      linux: [
+        "Ranch_0.5.0_amd64.AppImage",
+        "Ranch_0.5.0_amd64.AppImage.sig",
+        "Ranch_0.5.0_amd64.deb",
+      ],
+      macos: ["Ranch.app.tar.gz", "Ranch.app.tar.gz.sig", "Ranch_0.5.0_universal.dmg"],
+    }
+    for (const [p, names] of Object.entries(sums)) {
+      mkdirSync(join(temp, "release", p), { recursive: true })
+      writeFileSync(
+        join(temp, "release", p, `SHA256SUMS-${p}.txt`),
+        names.map((f) => `${sha256(f)}  ${f}\n`).join(""),
+      )
+    }
+    const r = runStep(s, { RUNNER_TEMP: temp })
+    assert.equal(r.status, 0, r.stderr)
+    assert.deepEqual(
+      readFileSync(join(temp, "subjects.txt"), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => l.split("  ")[1]),
+      [
+        "Ranch_0.5.0_amd64.AppImage",
+        "Ranch_0.5.0_amd64.deb",
+        "Ranch.app.tar.gz",
+        "Ranch_0.5.0_universal.dmg",
+      ],
+    )
+    assert.ok(
+      readFileSync(join(temp, "subjects.txt"), "utf8").startsWith(
+        `${sha256("Ranch_0.5.0_amd64.AppImage")}  `,
+      ),
     )
   })
 

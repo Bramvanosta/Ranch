@@ -7,6 +7,10 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 <!-- Releasing: add `## [vX.Y.Z] - date` above the version's sections and write ONE short paragraph right
      under it, before the first `###`. That paragraph is what the update dialog shows (scripts/publish-update.mjs). -->
 
+### Added
+
+- **Every download can be checked against the run that built it.** Each file of a release (the `.dmg`, the `.deb`, `.rpm` and AppImage, the update archive) comes with a build provenance attestation: `gh attestation verify <file> --repo Bramvanosta/Ranch` says it was built by this repository's release workflow, at its tag. The signing keys never meet the build's dependencies (docs/releasing.md).
+
 ## [v0.4.0] - 2026-10-28
 
 Fast on a far Redis, and clearer everywhere. In short: **one connection per Redis, kept open**, so a remote server answers like a local one and slow no longer means "unreachable"; **a new home** with every connection and what needs attention across them; **a connection overview** with live events, schedulers, workers, flows, a timeline and a map; **failed jobs grouped by cause** and running jobs with their progress; native windows, ⌘K to reach everything, and destructive actions that confirm in a sheet; **the Agents page**, where you choose what job data agents see and read the notes they leave on failures, and **Ask AI**; tighter safety for agents; and an install through **Homebrew** on macOS. Some keyboard shortcuts and MCP tool outputs change: the changelog lists them.

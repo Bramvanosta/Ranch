@@ -9,6 +9,7 @@ export const PINS = {
   "actions/cache": ["0057852bfaa89a56745cba8c7296529d2fc39830", "v4.3.0"],
   "actions/upload-artifact": ["b7c566a772e6b6bfb58ed0dc250532a479d7789f", "v6.0.0"],
   "actions/download-artifact": ["018cc2cf5baa6db3ef3c5f8a56943fffe632ef53", "v6.0.0"],
+  "actions/attest-build-provenance": ["4d101475d8b20a2381f78447822ac1eab6504dd8", "v4.2.2"],
   "docker/setup-buildx-action": ["8d2750c68a42422c14e847fe6c8ac0403b4cbd6f", "v3.12.0"],
   "docker/build-push-action": ["10e90e3645eae34f1e60eeb005ba3a3d33f178e8", "v6.19.2"],
   "docker/login-action": ["c94ce9fb468520275223c153574b00df6fe4bcc9", "v3.7.0"],
