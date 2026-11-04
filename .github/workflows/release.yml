@@ -3,21 +3,44 @@
 #  - tag push vX.Y.Z-rc.N  → pre-release
 # (The server image of the same tag is built by image.yml.)
 #
-# `release` checks that the tag is a commit of main whose CI passed, then
-# creates the release as a DRAFT: nobody sees it yet. The Linux and macOS jobs
-# build in parallel, each attaching its own files and checksums (`gh release
-# upload --clobber`: a re-run replaces what it uploaded). Once both are done,
-# `publish` makes the release public, publishes the updates to the feed
-# (scripts/publish-update.mjs, docs/releasing.md), one platform after the
-# other, and last updates the Homebrew tap, whose failure fails nothing else.
+# The signing keys never share a runner with code from a dependency. On a
+# hosted runner every step of a job runs as the same user, and a process a
+# step leaves behind lives until the job ends: a package's install script, a
+# cargo build script or a proc macro could read the other steps' environment
+# and files, or use an unlocked keychain. So each platform is built, then
+# signed on a fresh runner:
+#  - release: the tag is a commit of main whose CI passed; what the `release`
+#    environment holds (each set of secrets all or nothing: a partial set fails
+#    here, before anything is built; scripts/release-preflight.mjs); the
+#    release created as a DRAFT, or edited by a re-run.
+#  - build-linux, build-macos: pnpm install, cargo, the Tauri CLI. NO secret, no
+#    environment, contents: read. The unsigned bundles, packed (a tar keeps the
+#    links), their sha256 as the job's output, uploaded as an artifact.
+#  - sign-linux, sign-macos: a fresh runner, `environment: release`. No pnpm
+#    install, no Homebrew, no cargo: checkout, Node, the artifact checked
+#    against the build job's sha256, then this repository's scripts only
+#    (their imports: Node.js built-ins; scripts/release-workflow.test.mjs walks
+#    them) and the system's tools. macOS: the Developer ID signature,
+#    notarization and stapling, the DMG (scripts/sign-macos.mjs, the keychain
+#    of scripts/ci-keychain.sh); both: the updater archive's signature
+#    (scripts/minisign.mjs).
+#  - attach: the signed files on the release (scripts/attach-release.sh, `gh
+#    release upload --clobber`: a re-run replaces what it attached, except an
+#    update the feed already serves).
+#  - publish: the release made public, the updates published to the feed
+#    (scripts/publish-update.mjs, docs/releasing.md), then the Homebrew tap,
+#    whose failure fails nothing else.
 #
-# Secrets (Settings → Secrets and variables → Actions), all optional:
-#  - TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD): signs the updater archives;
-#    without it the bundles are built without them and no update is published
+# Secrets: the `release` environment's (Settings → Environments → release,
+# deployments from v* tags only; docs/releasing.md), each set optional:
 #  - APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-#    APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID: sign and notarize the macOS app
+#    APPLE_TEAM_ID, APPLE_API_KEY, APPLE_API_ISSUER, APPLE_API_KEY_P8: sign
+#    and notarize the macOS app
+#  - TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD: sign the
+#    updater archives; without them no update is published
 #  - HOMEBREW_TAP_DEPLOY_KEY: pushes the macOS cask to Bramvanosta/homebrew-tap
-# The release and the feed use the job's GITHUB_TOKEN.
+# The release and the feed use the job's GITHUB_TOKEN, handed only to the
+# steps that call `gh` or publish the update, in jobs that run no build tool.
 name: Release
 
 on:
@@ -25,32 +48,39 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-# The job token can write releases: it is handed only to the steps that call
-# `gh` or publish the update, never to the builds (pnpm install, cargo build
-# scripts, the bundler).
 env:
   GH_REPO: ${{ github.repository }}
 
 jobs:
   release:
     runs-on: ubuntu-24.04
+    # The environment's secrets are only seen as set or not (`secrets.X != ''`).
+    environment: release
     # Up to 25 minutes waiting for main's CI on the tagged commit.
     timeout-minutes: 30
     permissions:
       contents: write
       actions: read
     outputs:
+      version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      signed: ${{ steps.config.outputs.signed }}
+      updates: ${{ steps.config.outputs.updates }}
+      tap: ${{ steps.config.outputs.tap }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
       - name: Version
         id: version
         # The tag is the version; anything but vX.Y.Z or vX.Y.Z-<pre> stops the release here.
@@ -59,6 +89,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/check-release-commit.sh "$GITHUB_SHA"
+      - name: What is configured
+        id: config
+        # Presence only: no value of a secret reaches this job.
+        env:
+          HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          HAS_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          HAS_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
+          HAS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
+          HAS_APPLE_API_KEY: ${{ secrets.APPLE_API_KEY != '' }}
+          HAS_APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER != '' }}
+          HAS_APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+          HAS_TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          HAS_TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD != '' }}
+          HAS_HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY != '' }}
+          HAS_APPLE_ID: ${{ secrets.APPLE_ID != '' }}
+          HAS_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD != '' }}
+        run: node scripts/release-preflight.mjs --output "$GITHUB_OUTPUT"
       - name: Release notes
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -118,14 +165,18 @@ jobs:
               --notes-file notes.md --prerelease="$PRERELEASE"
           fi
 
-  linux:
+  build-linux:
     needs: release
     # Ubuntu 22.04: an older glibc than today's distributions, so the AppImage
     # built here runs on them and on everything newer.
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
       - name: Tauri system dependencies
@@ -136,31 +187,27 @@ jobs:
             librsvg2-dev libxdo-dev libssl-dev libdbus-1-dev pkg-config \
             file rpm xdg-utils
       - uses: ./.github/actions/pnpm
-      # rust-toolchain.toml's version, the one CI tested.
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: 1.99.1
+      - name: Rust 1.99.1
+        # rust-toolchain.toml's version, the one CI tested, through the runner's rustup.
+        run: |
+          set -eu
+          rustup toolchain install 1.99.1 --profile minimal
+          echo "RUSTUP_TOOLCHAIN=1.99.1" >> "$GITHUB_ENV"
       - name: Build the bundles
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # The AppImage tooling runs without FUSE.
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           set -eu
           VERSION=$(node scripts/set-version.mjs "$GITHUB_REF_NAME" | sed -n 's/^version=//p')
-          # Updater artifacts need the signing key; without it, plain bundles.
-          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
-            CONFIG='{"bundle":{"createUpdaterArtifacts":false}}'
-          else
-            CONFIG='{}'
-          fi
+          # No updater artifact here: the AppImage is signed by sign-linux.
+          CONFIG='{"bundle":{"createUpdaterArtifacts":false}}'
           # `-- --locked`: cargo builds exactly Cargo.lock, as CI did.
           pnpm tauri build --bundles deb,appimage --config "$CONFIG" -- --locked
           # RPM refuses a `-` in a version. A pre-release goes in the package's
           # release instead, Fedora's way: 0.4.0-rc.1 is version 0.4.0, release
           # 0.rc.1, which sorts before 0.4.0's release 1. Same binary.
-          # `tauri bundle` needs --features (see the macOS job).
+          # `tauri bundle` needs --features (see build-macos).
           RPM_VERSION=${VERSION%%-*}
           case "$VERSION" in
             *-*) RPM_RELEASE="0.${VERSION#*-}" ;;
@@ -168,55 +215,53 @@ jobs:
           esac
           pnpm tauri bundle --features desktop --bundles rpm --config \
             "{\"version\":\"$RPM_VERSION\",\"bundle\":{\"createUpdaterArtifacts\":false,\"linux\":{\"rpm\":{\"release\":\"$RPM_RELEASE\"}}}}"
-      - name: Attach to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Pack the bundles
+        id: pack
         run: |
           set -eu
-          mkdir out
           B=src-tauri/target/release/bundle
-          cp $B/deb/*.deb $B/rpm/*.rpm $B/appimage/*.AppImage out/
-          cp $B/appimage/*.AppImage.sig out/ 2>/dev/null || true
-          (cd out && sha256sum * > SHA256SUMS-linux.txt)
-          gh release upload "$GITHUB_REF_NAME" out/* --clobber
+          S="$RUNNER_TEMP/bundles"
+          A="$RUNNER_TEMP/artifact"
+          rm -rf "$S" "$A"
+          mkdir -p "$S" "$A"
+          cp $B/deb/*.deb $B/rpm/*.rpm $B/appimage/*.AppImage "$S/"
+          tar -czf "$A/ranch-linux.tar.gz" -C "$S" .
+          echo "sha256=$(sha256sum "$A/ranch-linux.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ranch-linux-unsigned
+          path: ${{ runner.temp }}/artifact/ranch-linux.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
 
-  macos:
+  build-macos:
     needs: release
     runs-on: macos-14
     timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
       - uses: ./.github/actions/pnpm
-      # rust-toolchain.toml's version, the one CI tested.
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: 1.99.1
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Rust 1.99.1
+        # rust-toolchain.toml's version, the one CI tested, through the runner's rustup.
+        run: |
+          set -eu
+          rustup toolchain install 1.99.1 --profile minimal \
+            --target aarch64-apple-darwin --target x86_64-apple-darwin
+          echo "RUSTUP_TOOLCHAIN=1.99.1" >> "$GITHUB_ENV"
       - name: Build the app
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        # Unsigned (no APPLE_* here) and without updater artifacts: sign-macos
+        # signs, notarizes, makes the archive and the DMG.
         run: |
           set -eu
           node scripts/set-version.mjs "$GITHUB_REF_NAME"
-          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
-            CONFIG='{"bundle":{"createUpdaterArtifacts":false}}'
-          else
-            CONFIG='{}'
-          fi
-          # A secret that is not set arrives as an empty string; it must be
-          # absent, not empty, or Tauri would try to sign or notarize with it.
-          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            eval "[ -n \"\${$v:-}\" ]" || unset "$v"
-          done
+          CONFIG='{"bundle":{"createUpdaterArtifacts":false}}'
           # In three steps. A universal build compiles both architectures but only
           # merges the MAIN binary into target/universal-apple-darwin; the bundle also
           # ships `ranch-mcp`, which the bundler then looks for there and does not find.
@@ -228,29 +273,319 @@ jobs:
             "$T/x86_64-apple-darwin/release/ranch-mcp"
           # `tauri bundle` does not read `build.features` from tauri.conf.json: without
           # --features it does not know `ranch-mcp` and looks for a `ranch_mcp`.
-          pnpm tauri bundle --target universal-apple-darwin --features desktop --bundles app,dmg --config "$CONFIG"
+          pnpm tauri bundle --target universal-apple-darwin --features desktop --bundles app --config "$CONFIG"
+      - name: Pack the app
+        id: pack
+        # A tar keeps the app's links and modes; no extended attribute.
+        run: |
+          set -eu
+          A="$RUNNER_TEMP/artifact"
+          rm -rf "$A"
+          mkdir -p "$A"
+          /usr/bin/tar --no-mac-metadata --no-xattrs -czf "$A/ranch-macos.tar.gz" \
+            -C src-tauri/target/universal-apple-darwin/release/bundle/macos Ranch.app
+          echo "sha256=$(shasum -a 256 "$A/ranch-macos.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ranch-macos-unsigned
+          path: ${{ runner.temp }}/artifact/ranch-macos.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  sign-linux:
+    needs: [release, build-linux]
+    # A fresh runner that runs this repository's scripts only.
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      sums: ${{ steps.collect.outputs.sums }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: ranch-linux-unsigned
+          path: ${{ runner.temp }}/artifact
+      - name: The build job's bundles
+        # The very file build-linux packed (its sha256), checked before anything is unpacked.
+        env:
+          SHA256: ${{ needs.build-linux.outputs.sha256 }}
+        run: |
+          set -eu
+          A="$RUNNER_TEMP/artifact/ranch-linux.tar.gz"
+          if ! printf '%s\n' "$SHA256" | grep -Eqx '[0-9a-f]{64}'; then
+            echo "::error::build-linux gave no sha256 of its bundles"
+            exit 1
+          fi
+          echo "$SHA256  $A" | shasum -a 256 -c
+          D="$RUNNER_TEMP/out"
+          rm -rf "$D"
+          mkdir -p "$D"
+          tar -xzf "$A" -C "$D"
+      - name: Sign the AppImage
+        if: needs.release.outputs.updates == 'on'
+        # The updater key in a 0600 file for this one command, removed after it.
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          umask 077
+          S="$RUNNER_TEMP/signing"
+          mkdir -p "$S"
+          K="$S/updater.key"
+          trap 'rm -f "$K"' EXIT
+          printf '%s\n' "$TAURI_SIGNING_PRIVATE_KEY" > "$K"
+          unset TAURI_SIGNING_PRIVATE_KEY
+          node scripts/minisign.mjs sign "$RUNNER_TEMP"/out/*.AppImage --key-file "$K" --version "$VERSION"
+      - name: Collect the files
+        id: collect
+        env:
+          UPDATES: ${{ needs.release.outputs.updates }}
+        run: |
+          set -eu
+          B="$RUNNER_TEMP/out"
+          O="$RUNNER_TEMP/release"
+          rm -rf "$O"
+          mkdir -p "$O"
+          for pattern in '*.deb' '*.rpm' '*.AppImage'; do
+            set -- "$B"/$pattern
+            if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+              echo "::error::expected one $pattern from build-linux"
+              exit 1
+            fi
+            cp "$1" "$O/"
+            if [ "$pattern" = '*.AppImage' ] && [ "$UPDATES" = on ]; then
+              if [ ! -f "$1.sig" ]; then
+                echo "::error::$(basename "$1").sig was not made (updates: on)"
+                exit 1
+              fi
+              cp "$1.sig" "$O/"
+            fi
+          done
+          (cd "$O" && shasum -a 256 -- * > SHA256SUMS-linux.txt)
+          cat "$O/SHA256SUMS-linux.txt"
+          echo "sums=$(shasum -a 256 "$O/SHA256SUMS-linux.txt" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ranch-linux-signed
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+      - name: Remove the signing material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/signing"
+
+  sign-macos:
+    needs: [release, build-macos]
+    # A fresh runner that runs this repository's scripts and the system's tools only.
+    runs-on: macos-14
+    environment: release
+    # Two notarizations, each waited for.
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    outputs:
+      sums: ${{ steps.collect.outputs.sums }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Signing material
+        id: material
+        # The certificate into a temporary keychain (the key non-extractable),
+        # the App Store Connect key into a file only this user reads.
+        env:
+          SIGNED: ${{ needs.release.outputs.signed }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -eu
+          umask 077
+          S="$RUNNER_TEMP/signing"
+          rm -rf "$S"
+          mkdir -p "$S"
+          if [ "$SIGNED" != true ]; then
+            echo "No Apple set: the app is signed ad hoc"
+            exit 0
+          fi
+          bash scripts/ci-keychain.sh import "$S" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$S/AuthKey.p8"
+          echo "api_key_path=$S/AuthKey.p8" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: ranch-macos-unsigned
+          path: ${{ runner.temp }}/artifact
+      - name: The build job's app
+        # The very file build-macos packed (its sha256), checked before anything is unpacked.
+        env:
+          SHA256: ${{ needs.build-macos.outputs.sha256 }}
+        run: |
+          set -eu
+          A="$RUNNER_TEMP/artifact/ranch-macos.tar.gz"
+          if ! printf '%s\n' "$SHA256" | grep -Eqx '[0-9a-f]{64}'; then
+            echo "::error::build-macos gave no sha256 of its app"
+            exit 1
+          fi
+          echo "$SHA256  $A" | shasum -a 256 -c
+          D="$RUNNER_TEMP/unsigned"
+          rm -rf "$D"
+          mkdir -p "$D"
+          /usr/bin/tar -xzf "$A" -C "$D"
+      - name: Sign, notarize, the DMG
+        env:
+          SIGNED: ${{ needs.release.outputs.signed }}
+          UPDATES: ${{ needs.release.outputs.updates }}
+          VERSION: ${{ needs.release.outputs.version }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ steps.material.outputs.api_key_path }}
+          APPLE_KEYCHAIN: ${{ steps.material.outputs.keychain }}
+        run: |
+          set -eu
+          set -- --app "$RUNNER_TEMP/unsigned/Ranch.app" --out "$RUNNER_TEMP/out" --version "$VERSION"
+          if [ "$UPDATES" = on ]; then set -- "$@" --updater-archive; fi
+          if [ "$SIGNED" = true ]; then
+            node scripts/sign-macos.mjs "$@" --release
+          else
+            unset APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH APPLE_KEYCHAIN
+            echo "::warning::An ad hoc build: not signed with a Developer ID, not notarized (no Apple set)"
+            node scripts/sign-macos.mjs "$@"
+          fi
+      - name: Sign the update archive
+        if: needs.release.outputs.updates == 'on'
+        # The updater key in a 0600 file for this one command, removed after it.
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          umask 077
+          S="$RUNNER_TEMP/signing"
+          mkdir -p "$S"
+          K="$S/updater.key"
+          trap 'rm -f "$K"' EXIT
+          printf '%s\n' "$TAURI_SIGNING_PRIVATE_KEY" > "$K"
+          unset TAURI_SIGNING_PRIVATE_KEY
+          node scripts/minisign.mjs sign "$RUNNER_TEMP/out/Ranch.app.tar.gz" --key-file "$K" --version "$VERSION"
+      - name: Collect the files
+        id: collect
+        env:
+          UPDATES: ${{ needs.release.outputs.updates }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -eu
+          B="$RUNNER_TEMP/out"
+          O="$RUNNER_TEMP/release"
+          rm -rf "$O"
+          mkdir -p "$O"
+          files="Ranch_${VERSION}_universal.dmg"
+          if [ "$UPDATES" = on ]; then files="$files Ranch.app.tar.gz Ranch.app.tar.gz.sig"; fi
+          for f in $files; do
+            if [ ! -f "$B/$f" ]; then
+              echo "::error::$f was not made (updates: $UPDATES)"
+              exit 1
+            fi
+            cp "$B/$f" "$O/"
+          done
+          (cd "$O" && shasum -a 256 -- * > SHA256SUMS-macos.txt)
+          cat "$O/SHA256SUMS-macos.txt"
+          echo "sums=$(shasum -a 256 "$O/SHA256SUMS-macos.txt" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ranch-macos-signed
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+      - name: Remove the signing material
+        if: always()
+        # The files go even when security fails.
+        run: |
+          status=0
+          bash scripts/ci-keychain.sh delete "$RUNNER_TEMP/signing" || status=$?
+          rm -rf "$RUNNER_TEMP/signing"
+          exit "$status"
+
+  attach:
+    needs: [release, sign-linux, sign-macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: ranch-linux-signed
+          path: ${{ runner.temp }}/release/linux
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: ranch-macos-signed
+          path: ${{ runner.temp }}/release/macos
+      - name: The signing jobs' files
+        env:
+          LINUX_SUMS: ${{ needs.sign-linux.outputs.sums }}
+          MACOS_SUMS: ${{ needs.sign-macos.outputs.sums }}
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/release/linux"
+          echo "$LINUX_SUMS  SHA256SUMS-linux.txt" | shasum -a 256 -c
+          shasum -a 256 -c SHA256SUMS-linux.txt
+          cd "$RUNNER_TEMP/release/macos"
+          echo "$MACOS_SUMS  SHA256SUMS-macos.txt" | shasum -a 256 -c
+          shasum -a 256 -c SHA256SUMS-macos.txt
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          mkdir out
-          B=src-tauri/target/universal-apple-darwin/release/bundle
-          cp $B/dmg/*.dmg out/
-          cp $B/macos/*.app.tar.gz $B/macos/*.app.tar.gz.sig out/ 2>/dev/null || true
-          (cd out && shasum -a 256 * > SHA256SUMS-macos.txt)
-          gh release upload "$GITHUB_REF_NAME" out/* --clobber
+          bash scripts/attach-release.sh linux "$RUNNER_TEMP/release/linux"
+          bash scripts/attach-release.sh macos "$RUNNER_TEMP/release/macos"
 
   # Both platforms are attached: the release goes public, then the updates
   # point at files that exist, then the tap.
   publish:
-    needs: [release, linux, macos]
+    needs: [release, attach]
     runs-on: ubuntu-24.04
+    environment: release
     timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -268,47 +603,40 @@ jobs:
       # Auto-updates: the AppImage is what a Linux updater installs, the
       # universal app archive serves both Mac architectures. One job, one
       # platform after the other: the manifest each run rebuilds from the
-      # platform files always has the platforms before it. No signature (no
-      # signing key), no update: the release stands without one. The archives
-      # are already attached; only their names are given here.
+      # platform files always has the platforms before it. The archives are
+      # already attached; only their names are given here.
       - name: Publish the updates
+        if: needs.release.outputs.updates == 'on'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           mkdir sig
-          gh release download "$GITHUB_REF_NAME" --dir sig --pattern '*.AppImage.sig' || true
-          gh release download "$GITHUB_REF_NAME" --dir sig --pattern '*.app.tar.gz.sig' || true
-          S=$(ls sig/*.AppImage.sig 2>/dev/null | head -1 || true)
-          if [ -n "$S" ]; then
-            # Built on an x86_64 runner (the linux job).
-            node scripts/publish-update.mjs "$GITHUB_REF_NAME" --platforms linux-x86_64 \
-              --artifact "${S%.sig}" --signature "$S"
-          else
-            echo "Linux: no signature, update not published"
+          gh release download "$GITHUB_REF_NAME" --dir sig --pattern '*.AppImage.sig' --pattern 'Ranch.app.tar.gz.sig'
+          set -- sig/*.AppImage.sig
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ] || [ ! -f sig/Ranch.app.tar.gz.sig ]; then
+            echo "::error::updates are on, but the release lacks an AppImage .sig or Ranch.app.tar.gz.sig"
+            exit 1
           fi
+          # Built on an x86_64 runner (build-linux).
+          node scripts/publish-update.mjs "$GITHUB_REF_NAME" --platforms linux-x86_64 \
+            --artifact "${1%.sig}" --signature "$1"
           S=sig/Ranch.app.tar.gz.sig
-          if [ -f "$S" ]; then
-            node scripts/publish-update.mjs "$GITHUB_REF_NAME" --platforms darwin-aarch64,darwin-x86_64 \
-              --artifact "${S%.sig}" --signature "$S"
-          else
-            echo "macOS: no signature, update not published"
-          fi
+          node scripts/publish-update.mjs "$GITHUB_REF_NAME" --platforms darwin-aarch64,darwin-x86_64 \
+            --artifact "${S%.sig}" --signature "$S"
       # Homebrew: the tap's casks follow the release, `ranch` for a stable
       # version and `ranch@beta` for every version (scripts/homebrew-cask.mjs).
       # The deploy key may write to the tap and nothing else. Last, and its
       # failure fails nothing: the release and the updates are already out.
       - name: Update the Homebrew tap
+        if: needs.release.outputs.tap == 'on'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           set -eu
-          if [ -z "${TAP_KEY:-}" ]; then
-            echo "no HOMEBREW_TAP_DEPLOY_KEY: tap not updated"; exit 0
-          fi
           SHA=$(gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS-macos.txt --output - \
             | awk '/\.dmg$/ { print $1 }')
           [ "$(printf '%s\n' "$SHA" | wc -l)" -eq 1 ] && [ -n "$SHA" ] || {

@@ -1,7 +1,8 @@
 # The Rust every build uses: contributors (rustup reads this file), CI, the
 # release builds and the server image (Dockerfile). mise.toml names the same
 # version. To bump: change it here, in mise.toml, in the Dockerfile's
-# `rust:` image and in the workflows' `toolchain:` inputs, in one commit.
+# `rust:` image, in ci.yml's `toolchain:` inputs and in release.yml's
+# `rustup toolchain install` steps, in one commit.
 [toolchain]
 channel = "1.99.1"
 components = ["rustfmt", "clippy"]
