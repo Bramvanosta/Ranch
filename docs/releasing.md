@@ -28,11 +28,15 @@ The **desktop** job runs the live suites too: a Redis service seeded with BullMQ
 ## Releasing
 
 ```bash
-git tag v0.4.0-rc.1 && git push origin v0.4.0-rc.1    # pre-release
-git tag v0.4.0      && git push origin v0.4.0         # release
+git tag -a v0.5.0-rc.1 -m "Ranch 0.5.0-rc.1" && git push origin v0.5.0-rc.1    # pre-release
+git tag -a v0.5.0 -m "Ranch 0.5.0"           && git push origin v0.5.0         # release
 ```
 
+Tags are annotated (`-a`): they keep who tagged and when.
+
 Tag a commit of `main` once its CI has passed: both `release.yml` and `image.yml` check it (`scripts/check-release-commit.sh`) and stop otherwise. A tag pushed right after `main` waits for that CI, up to 25 minutes; past that, re-run the failed jobs once it is green.
+
+Check that the push to `main` started a CI run at all (`gh run list --workflow ci.yml --commit <sha>`): a push GitHub took during an outage can start none, and nothing starts one afterwards (`ci.yml` has no manual trigger, and the guard only counts runs of a push). Merge the next change and tag that commit instead.
 
 The tag is the version: `scripts/set-version.mjs` writes it into `package.json`, `tauri.conf.json`, `Cargo.toml` and `Cargo.lock` inside each job. Nothing to bump by hand, nothing committed back. A tag that is not `vX.Y.Z` or `vX.Y.Z-<pre>` fails the jobs instead of publishing something odd.
 
