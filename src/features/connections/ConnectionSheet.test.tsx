@@ -177,12 +177,24 @@ describe("ConnectionSheet: step 2, what the test found", () => {
     await runTest()
     const facts = screen.getByTestId("probe-facts")
     expect(facts).toHaveTextContent("2 ms")
-    expect(facts).toHaveTextContent("v7.4.2")
+    expect(facts).toHaveTextContent(/Redisv7\.4\.2/)
     expect(facts).toHaveTextContent(/TLSoff/)
     expect(facts).toHaveTextContent("bull:emails, bull:exports and 5 more")
     expect(facts).toHaveTextContent(/Schedulers3/)
     expect(facts).toHaveTextContent(/Workers4/)
     expect(addButton()).not.toBeDisabled()
+  })
+
+  it("a Valkey server is named by its own name and version", async () => {
+    mocked.testConnection.mockResolvedValue(
+      succeeded({ serverName: "Valkey", redisVersion: "9.1.2" }),
+    )
+    openSheet()
+    fillHost()
+    await runTest()
+    const facts = screen.getByTestId("probe-facts")
+    expect(facts).toHaveTextContent(/Valkeyv9\.1\.2/)
+    expect(facts).not.toHaveTextContent("Redis")
   })
 
   it("starts the name from the host, then saves with addConnection", async () => {

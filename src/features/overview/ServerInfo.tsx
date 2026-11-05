@@ -37,7 +37,11 @@ export function ServerInfoItems({
   return (
     <>
       {endpointLine(connection) ? <span>{endpointLine(connection)}</span> : null}
-      {info?.redisVersion ? <span data-testid="info-redis">Redis {info.redisVersion}</span> : null}
+      {info?.redisVersion ? (
+        <span data-testid="info-redis">
+          {info.serverName ?? "Redis"} {info.redisVersion}
+        </span>
+      ) : null}
       {info ? <span data-testid="info-latency">{info.latencyMs} ms</span> : null}
       {info?.usedMemoryBytes != null ? (
         <span data-testid="info-memory">

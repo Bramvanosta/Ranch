@@ -145,6 +145,10 @@ pub struct SshHostKeyPin {
 #[serde(rename_all = "camelCase")]
 pub struct TestConnectionResult {
     pub success: bool,
+    /// A Redis-compatible server that names itself (`Valkey`); `None` for Redis.
+    #[serde(default)]
+    pub server_name: Option<String>,
+    /// The server's own version (Valkey's for Valkey).
     pub redis_version: Option<String>,
     pub error: Option<TestConnectionError>,
     /// Populated when this Test successfully established
@@ -179,6 +183,7 @@ impl From<domain::probe::ProbeReport> for TestConnectionResult {
     fn from(v: domain::probe::ProbeReport) -> Self {
         Self {
             success: v.success,
+            server_name: v.server_name,
             redis_version: v.version,
             error: v.error.map(Into::into),
             ssh_host_key_pinned: v.host_key.map(|k| SshHostKeyPin {

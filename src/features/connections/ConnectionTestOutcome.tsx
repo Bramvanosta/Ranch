@@ -63,23 +63,31 @@ export function TestOutcome({
           <span className="font-mono">{result.sshHostKeyPinned.fingerprint}</span>).
         </p>
       ) : null}
-      <ProbeFacts probe={result.probe ?? null} version={result.redisVersion} tls={tls} />
+      <ProbeFacts
+        probe={result.probe ?? null}
+        server={result.serverName ?? "Redis"}
+        version={result.redisVersion}
+        tls={tls}
+      />
     </div>
   )
 }
 
 function ProbeFacts({
   probe,
+  server,
   version,
   tls,
 }: {
   probe: ConnectionProbe | null
+  /** "Redis", or the name a compatible server gives itself ("Valkey"). */
+  server: string
   version: string | null
   tls: boolean
 }) {
   const facts: Array<[string, ReactNode]> = [
     ["Latency", probe ? `${probe.latencyMs} ms` : "-"],
-    ["Redis", version ? `v${version}` : "version not reported"],
+    [server, version ? `v${version}` : "version not reported"],
     ["TLS", tls ? "on" : "off"],
   ]
   if (probe) {

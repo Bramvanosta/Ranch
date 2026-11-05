@@ -919,6 +919,10 @@ impl From<domain::events::QueueEvents> for QueueEvents {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Type, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
+    /// A Redis-compatible server that names itself (`Valkey`); `None` for Redis.
+    #[serde(default)]
+    pub server_name: Option<String>,
+    /// The server's own version (Valkey's for Valkey).
     pub redis_version: Option<String>,
     /// Round trip of one `PING`, ms.
     pub latency_ms: u32,
@@ -932,6 +936,7 @@ pub struct ServerInfo {
 impl From<domain::server::ServerInfo> for ServerInfo {
     fn from(v: domain::server::ServerInfo) -> Self {
         Self {
+            server_name: v.server_name,
             redis_version: v.redis_version,
             latency_ms: v.latency_ms,
             used_memory_bytes: v.used_memory_bytes,

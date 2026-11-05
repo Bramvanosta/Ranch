@@ -138,7 +138,8 @@ jobs:
     # The desktop app's backend: everything, including the UI/MCP parity
     # contract and the integration tests, against a real Redis seeded with
     # BullMQ queues, and with real BullMQ 5 and 6 workers processing what
-    # Ranch writes (the *_live and *_compat_live suites). The slow one.
+    # Ranch writes (the *_live and *_compat_live suites), then the same live
+    # suites against Valkey. The slow one.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
@@ -147,6 +148,11 @@ jobs:
         ports: ["6379:6379"]
         options: >-
           --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+      valkey:
+        image: valkey/valkey:9.1.2-alpine
+        ports: ["6380:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
     env:
       RANCH_LOCAL_REDIS: "1"
       RANCH_REDIS_PORT: "6379"
@@ -182,7 +188,8 @@ jobs:
         working-directory: .
         run: |
           (cd .docker/bullmq-seed && npm ci --no-progress --no-audit --no-fund \
-            && REDIS_URL=redis://127.0.0.1:6379 node seed.mjs)
+            && REDIS_URL=redis://127.0.0.1:6379 node seed.mjs \
+            && REDIS_URL=redis://127.0.0.1:6380 node seed.mjs)
           (cd .docker/bullmq-compat && npm ci --no-audit --no-fund)
       - name: Clippy (desktop)
         run: |
@@ -200,6 +207,11 @@ jobs:
       - name: Tests against Redis and BullMQ workers
         # The *_live suites are #[ignore]d without a Redis (they say so);
         # here they run, the BullMQ compatibility suites included.
+        run: cargo test --locked --test '*_live' -- --include-ignored
+      - name: Tests against Valkey and BullMQ workers
+        # The same suites, against the Redis fork some hosts now offer instead.
+        env:
+          RANCH_REDIS_PORT: "6380"
         run: cargo test --locked --test '*_live' -- --include-ignored
 
   image:

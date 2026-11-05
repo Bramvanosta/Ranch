@@ -10,6 +10,11 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 ### Added
 
 - **Every download can be checked against the run that built it.** Each file of a release (the `.dmg`, the `.deb`, `.rpm` and AppImage, the update archive) comes with a build provenance attestation: `gh attestation verify <file> --repo Bramvanosta/Ranch` says it was built by this repository's release workflow, at its tag. The signing keys never meet the build's dependencies (docs/releasing.md).
+- **Valkey, tested.** Ranch works with Valkey as with Redis, and CI now runs every live suite (BullMQ 5 and 6 workers included) against Valkey 9.1 too.
+
+### Fixed
+
+- **A Valkey server says it is Valkey.** The connection test and the overview's info strip showed "Redis 7.2.4", the version Valkey reports for compatibility; they now show "Valkey" and its own version.
 
 ## [v0.4.0] - 2026-10-28
 

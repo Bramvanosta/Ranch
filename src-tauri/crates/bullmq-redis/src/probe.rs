@@ -77,8 +77,9 @@ pub(super) async fn probe(
                 // tunnel drops at end-of-scope; one-shot probe.
                 drop(opened.tunnel);
                 return Ok(match result {
-                    Ok(Ok((version, findings))) => ProbeReport {
+                    Ok(Ok(((server_name, version), findings))) => ProbeReport {
                         success: true,
+                        server_name,
                         version,
                         error: None,
                         host_key: pin,
@@ -86,6 +87,7 @@ pub(super) async fn probe(
                     },
                     Ok(Err(e)) => ProbeReport {
                         success: false,
+                        server_name: None,
                         version: None,
                         error: Some(map_redis_err(e)),
                         host_key: pin,
@@ -93,6 +95,7 @@ pub(super) async fn probe(
                     },
                     Err(_elapsed) => ProbeReport {
                         success: false,
+                        server_name: None,
                         version: None,
                         error: Some(ProbeError::Timeout),
                         host_key: pin,
@@ -104,6 +107,7 @@ pub(super) async fn probe(
                 if let Some(error) = ssh_error(&err) {
                     return Ok(ProbeReport {
                         success: false,
+                        server_name: None,
                         version: None,
                         error: Some(error),
                         host_key: None,
@@ -126,8 +130,9 @@ pub(super) async fn probe(
     .await;
 
     Ok(match result {
-        Ok(Ok((version, findings))) => ProbeReport {
+        Ok(Ok(((server_name, version), findings))) => ProbeReport {
             success: true,
+            server_name,
             version,
             error: None,
             host_key: None,
@@ -135,6 +140,7 @@ pub(super) async fn probe(
         },
         Ok(Err(e)) => ProbeReport {
             success: false,
+            server_name: None,
             version: None,
             error: Some(map_redis_err(e)),
             host_key: None,
@@ -142,6 +148,7 @@ pub(super) async fn probe(
         },
         Err(_elapsed) => ProbeReport {
             success: false,
+            server_name: None,
             version: None,
             error: Some(ProbeError::Timeout),
             host_key: None,
@@ -153,7 +160,7 @@ pub(super) async fn probe(
 async fn ping_and_version(
     url: &str,
     tls_custom_ca: Option<&str>,
-) -> Result<(Option<String>, ProbeFindings), redis::RedisError> {
+) -> Result<((Option<String>, Option<String>), ProbeFindings), redis::RedisError> {
     let client = build_redis_client(url, tls_custom_ca)?;
     let mut conn = client
         .get_multiplexed_async_connection_with_config(&crate::tls::async_connection_config())
@@ -165,10 +172,7 @@ async fn ping_and_version(
         .arg("server")
         .query_async(&mut conn)
         .await?;
-    let version = info
-        .lines()
-        .find_map(|l| l.strip_prefix("redis_version:"))
-        .map(|v| v.trim().to_string());
+    let identity = crate::redis_info::server_identity(&info);
     // What BullMQ holds there. Best effort: a refused command
     // leaves its part empty, never fails the probe.
     let mut findings = ProbeFindings {
@@ -224,7 +228,7 @@ async fn ping_and_version(
             .map(|c| c.workers)
             .sum()
     });
-    Ok((version, findings))
+    Ok((identity, findings))
 }
 
 /// Substrings used to detect TLS-related failures in redis-rs error messages.

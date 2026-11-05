@@ -3,6 +3,9 @@
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ServerInfo {
+    /// A Redis-compatible server that names itself (`Valkey`); `None` for Redis.
+    pub server_name: Option<String>,
+    /// The server's own version: Valkey's, not the Redis one it reports too.
     pub redis_version: Option<String>,
     /// Round trip of one `PING`, ms.
     pub latency_ms: u32,

@@ -78,6 +78,8 @@ pub struct ProbeFindings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeReport {
     pub success: bool,
+    /// A Redis-compatible server that names itself (`Valkey`); `None` for Redis.
+    pub server_name: Option<String>,
     pub version: Option<String>,
     pub error: Option<ProbeError>,
     /// Set when the check went through an SSH tunnel it opened, whether

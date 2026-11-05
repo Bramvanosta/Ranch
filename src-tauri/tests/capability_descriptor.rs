@@ -92,6 +92,7 @@ impl BackendSpec for ParkingSpec {
     ) -> Result<ProbeReport, RanchError> {
         Ok(ProbeReport {
             success: false,
+            server_name: None,
             version: Some("parking 1".into()),
             error: Some(ProbeError::Other {
                 reason: format!("password {:?}", secrets.password),
