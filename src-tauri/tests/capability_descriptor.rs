@@ -262,6 +262,7 @@ async fn the_connection_test_is_the_probe_of_the_endpoints_kind() {
         serde_json::to_value(&report).unwrap(),
         json!({
             "success": false,
+            "serverName": null,
             "redisVersion": "parking 1",
             "error": { "kind": "other", "reason": "password Some(\"hunter2\")" },
             "sshHostKeyPinned": null,
