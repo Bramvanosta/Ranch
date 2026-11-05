@@ -221,6 +221,7 @@ impl BackendSpec for MemorySpec {
     ) -> Result<ProbeReport, RanchError> {
         Ok(ProbeReport {
             success: true,
+            server_name: None,
             version: None,
             error: None,
             host_key: None,

@@ -23,7 +23,7 @@ The release and the image use the workflow's own `GITHUB_TOKEN`: there is no tok
 
 **One Rust everywhere**: `rust-toolchain.toml` names the version (rustup reads it locally), and `mise.toml`, the workflows' `rustup toolchain install` steps and the Dockerfile's `rust:` image name the same one. Bump them together, in one commit: clippy gains lints with every release, so a bump can need fixes. The release builds use that version too and build exactly `Cargo.lock` (`--locked`), like CI. The Rust jobs build **without debug info** (`CARGO_PROFILE_DEV_DEBUG=0`): the desktop job links some thirty test binaries that each carry all of Tauri, and with debug info the linker can run out of memory. For the same reason those test binaries are linked three at a time. `Swatinem/rust-cache` keeps the dependencies between runs.
 
-The **desktop** job runs the live suites too: a Redis service seeded with BullMQ queues (`.docker/bullmq-seed`), and the BullMQ 5 and 6 workers of `.docker/bullmq-compat` processing what Ranch's scripts wrote (`RANCH_LOCAL_REDIS`, `RANCH_BULLMQ_COMPAT`).
+The **desktop** job runs the live suites too: a Redis service seeded with BullMQ queues (`.docker/bullmq-seed`), and the BullMQ 5 and 6 workers of `.docker/bullmq-compat` processing what Ranch's scripts wrote (`RANCH_LOCAL_REDIS`, `RANCH_BULLMQ_COMPAT`); then the same suites against a Valkey service, seeded the same way.
 
 ## Releasing
 

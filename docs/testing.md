@@ -66,7 +66,7 @@ RANCH_LOCAL_REDIS=1 RANCH_REDIS_PORT=6390 RANCH_BULLMQ_COMPAT=1 \
 - `RANCH_BULLMQ_COMPAT=1` makes a missing Node harness a failure instead of a skip in the `*_compat_live` suites.
 - `RANCH_SSH_LIVE=1` runs the SSH tunnel tests in `tests/ssh_tunnel_runtime.rs` against a bastion; its module doc says how to start one.
 
-CI's `desktop` job runs the same on every pull request, against a `redis:7-alpine` service on port 6379 seeded by `.docker/bullmq-seed/`, with `RANCH_LOCAL_REDIS=1 RANCH_REDIS_PORT=6379 RANCH_BULLMQ_COMPAT=1`.
+CI's `desktop` job runs the same on every pull request, against a `redis:7-alpine` service on port 6379 seeded by `.docker/bullmq-seed/`, with `RANCH_LOCAL_REDIS=1 RANCH_REDIS_PORT=6379 RANCH_BULLMQ_COMPAT=1`, then once more against a `valkey/valkey:9.1.2-alpine` service on port 6380, seeded the same way. To run them against Valkey locally, start one on a free port (`docker run -d -p 127.0.0.1:6391:6379 valkey/valkey:9.1.2-alpine`), seed it (`REDIS_URL=redis://127.0.0.1:6391 node seed.mjs` in `.docker/bullmq-seed`) and set `RANCH_REDIS_PORT=6391`.
 
 ## The front end
 

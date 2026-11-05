@@ -28,8 +28,9 @@ export const commands = {
 	 * 
 	 *  Turning an environment Production-colored locks its connections (the safe
 	 *  direction). Leaving Production never unlocks anything. Returns the ids of
-	 *  the connections whose lock flag changed so the caller can refresh their
-	 *  live actors.
+	 *  every connection in the environment, so the caller refreshes their live
+	 *  actors: each keeps the lock and the color it was spawned with, and the
+	 *  audit log takes the color from it.
 	 */
 	changeEnvironmentColor: (args: ChangeEnvironmentColorArgs) => typedError<null, RanchErrorDto>(__TAURI_INVOKE("change_environment_color", { args })),
 	/**
@@ -40,10 +41,10 @@ export const commands = {
 	 */
 	createEnvironment: (args: CreateEnvironmentArgs) => typedError<string, RanchErrorDto>(__TAURI_INVOKE("create_environment", { args })),
 	/**
-	 *  Move a connection to another environment (any group). The connection id,
-	 *  its credentials and its live actor are untouched, except when the move
-	 *  enters Production: the connection is locked (the safe direction)
-	 *  and its actor respawned so the lock applies immediately.
+	 *  Move a connection to another environment (any group). The connection id
+	 *  and its credentials are untouched; entering Production locks it (the safe
+	 *  direction). Its actor is respawned, so the lock and the new environment's
+	 *  color apply at once.
 	 */
 	moveConnection: (args: MoveConnectionArgs) => typedError<MoveConnectionResult, RanchErrorDto>(__TAURI_INVOKE("move_connection", { args })),
 	getMcpSafetySettings: () => typedError<McpSafetySettings, RanchErrorDto>(__TAURI_INVOKE("get_mcp_safety_settings")),
@@ -210,9 +211,7 @@ export const commands = {
 	readQueueEvents: (args: ReadQueueEventsArgs) => typedError<QueueEvents, RanchErrorDto>(__TAURI_INVOKE("read_queue_events", { args })),
 	listAttention: (args: ListAttentionArgs) => typedError<AttentionReport, RanchErrorDto>(__TAURI_INVOKE("list_attention", { args })),
 	getMcpInstallerStatus: () => typedError<McpInstallerOverview, RanchErrorDto>(__TAURI_INVOKE("get_mcp_installer_status")),
-	/**
-	 *  Installs Ranch's MCP server in one client's config.
-	 */
+	// Installs Ranch's MCP server in one client's config.
 	installMcpForClient: (client: McpClient) => typedError<McpInstallerStatus, RanchErrorDto>(__TAURI_INVOKE("install_mcp_for_client", { client })),
 	getMcpManualSnippet: () => typedError<McpManualSnippet, RanchErrorDto>(__TAURI_INVOKE("get_mcp_manual_snippet")),
 	checkForUpdates: () => typedError<UpdateCheckResult, RanchErrorDto>(__TAURI_INVOKE("check_for_updates")),
@@ -2068,6 +2067,9 @@ export type ServerCapabilities = {
 };
 
 export type ServerInfo = {
+	// A Redis-compatible server that names itself (`Valkey`); `None` for Redis.
+	serverName?: string | null,
+	// The server's own version (Valkey's for Valkey).
 	redisVersion: string | null,
 	// Round trip of one `PING`, ms.
 	latencyMs: number,
@@ -2210,6 +2212,9 @@ export type TestConnectionError = { kind: "authFailed" } | { kind: "cannotReach"
 
 export type TestConnectionResult = {
 	success: boolean,
+	// A Redis-compatible server that names itself (`Valkey`); `None` for Redis.
+	serverName?: string | null,
+	// The server's own version (Valkey's for Valkey).
 	redisVersion: string | null,
 	error: TestConnectionError | null,
 	/**
