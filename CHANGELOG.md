@@ -7,6 +7,10 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 <!-- Releasing: add `## [vX.Y.Z] - date` above the version's sections and write ONE short paragraph right
      under it, before the first `###`. That paragraph is what the update dialog shows (scripts/publish-update.mjs). -->
 
+## [v0.5.0] - 2026-11-05
+
+Valkey, and downloads you can check. Ranch is now tested against **Valkey** as it is against Redis, and names a Valkey server as Valkey, with its own version. Every file of a release comes with a **provenance attestation** that ties it to the run that built it, and the signing keys no longer meet the build's dependencies.
+
 ### Added
 
 - **Every download can be checked against the run that built it.** Each file of a release (the `.dmg`, the `.deb`, `.rpm` and AppImage, the update archive) comes with a build provenance attestation: `gh attestation verify <file> --repo Bramvanosta/Ranch` says it was built by this repository's release workflow, at its tag. The signing keys never meet the build's dependencies (docs/releasing.md).
