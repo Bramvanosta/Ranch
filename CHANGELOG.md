@@ -7,6 +7,10 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 <!-- Releasing: add `## [vX.Y.Z] - date` above the version's sections and write ONE short paragraph right
      under it, before the first `###`. That paragraph is what the update dialog shows (scripts/publish-update.mjs). -->
 
+## [v0.5.1] - 2026-11-11
+
+Agent approvals you can set aside. Closing an approval sheet no longer refuses the agent's request: it keeps waiting until you approve or deny it, and requests an agent sends at the same time each wait for their own decision.
+
 ### Fixed
 
 - **Closing an approval sheet no longer refuses the agent's request.** Esc or a click outside the sheet sets the request aside: it keeps waiting, the next one shows, and Agents › Pending Approvals (⌥⌘A) brings it back. An agent only reads "denied" when you press Deny; a request you never answer comes back as a timeout. Requests sent at the same time each wait for their own decision, and a request you already answered never shows again.
