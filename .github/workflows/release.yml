@@ -242,7 +242,7 @@ jobs:
 
   build-macos:
     needs: release
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     permissions:
       contents: read
@@ -398,7 +398,7 @@ jobs:
   sign-macos:
     needs: [release, build-macos]
     # A fresh runner that runs this repository's scripts and the system's tools only.
-    runs-on: macos-14
+    runs-on: macos-15
     environment: release
     # Two notarizations, each waited for.
     timeout-minutes: 150
