@@ -190,6 +190,9 @@ tower = { version = "0.5", features = ["util"] }
 # Already in the tree through tauri; listed so the code can name it.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
+# `statfs`: whether the app runs from a read-only volume, which an update
+# cannot replace (core::app_bundle). Already in the tree through tauri.
+libc = "0.2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = { version = "2", optional = true }

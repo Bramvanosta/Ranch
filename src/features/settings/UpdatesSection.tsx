@@ -37,7 +37,9 @@ function DesktopUpdates() {
     : query.isError
       ? `Could not check: ${query.error.message}`
       : data?.disabled
-        ? "Updates are turned off for this build."
+        ? // The reason is what to do about it: run from the disk image, the
+          // app has to be moved to Applications before it can update.
+          `${data.disabledReason ?? "Updates are turned off for this build"}.`
         : data?.available
           ? `Ranch ${data.version} is available.`
           : "Ranch is up to date."
