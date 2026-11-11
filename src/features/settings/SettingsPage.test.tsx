@@ -159,6 +159,25 @@ describe("SettingsPage", () => {
     const both = screen.getAllByRole("button", { name: "Install and restart" })
     fireEvent.click(both[both.length - 1] as HTMLElement)
     await waitFor(() => expect(mocked.installUpdate).toHaveBeenCalled())
+    // The sheet follows the install from here.
+    expect(screen.getByTestId("updater-step-downloading")).toHaveAttribute("data-state", "running")
+    expect(screen.getByTestId("updater-install")).toHaveTextContent("Downloading")
+  })
+
+  it("Updates says in the sheet why an install failed, and offers to try again", async () => {
+    mocked.checkForUpdates.mockResolvedValue(
+      ok({ available: true, version: "1.0.0", currentVersion: "0.9.0", disabled: false }),
+    )
+    mocked.installUpdate.mockResolvedValue({
+      status: "error",
+      error: { kind: "updater", message: "The update could not be downloaded: timed out" },
+    })
+    wrap(<SettingsPage tab="updates" onTab={vi.fn()} />)
+    fireEvent.click(await screen.findByRole("button", { name: "Install and restart" }))
+    fireEvent.click(screen.getByTestId("updater-install"))
+    expect(await screen.findByTestId("updater-error")).toHaveTextContent("timed out")
+    expect(screen.getByTestId("updater-step-downloading")).toHaveAttribute("data-state", "failed")
+    expect(screen.getByTestId("updater-install")).toHaveTextContent("Try again")
   })
 
   it("Updates in the server image says to pull a newer tag", () => {

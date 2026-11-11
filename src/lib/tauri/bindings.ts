@@ -218,7 +218,8 @@ export const commands = {
 	/**
 	 *  Download the update the feed offers, verify its signature against the key
 	 *  compiled into this app, replace the app and restart. Only ever called from
-	 *  the user's click. On success this does not return: the app restarts.
+	 *  the user's click. Each phase is reported on [`PROGRESS_EVENT`]. On success
+	 *  this does not return: the app restarts.
 	 */
 	installUpdate: () => typedError<null, RanchErrorDto>(__TAURI_INVOKE("install_update")),
 };
@@ -2308,6 +2309,24 @@ export type UpdateConnectionArgs = {
 	 */
 	locked?: boolean | null,
 };
+
+/**
+ *  The `updater:progress` event: the phase the install the user started is
+ *  in, in order. A failure is not an event: it is the command's error, and the
+ *  last phase reported says where it happened.
+ */
+export type UpdateProgressEvent = 
+/**
+ *  Bytes received so far, and the size of the download when the server
+ *  sent one (`None`: no `Content-Length`, the window shows activity only).
+ */
+{ phase: "downloading"; received: number; total: number | null } | 
+// Downloaded: the signature is checked against the key built into Ranch.
+{ phase: "verifying" } | 
+// The signature holds: the new version replaces this one.
+{ phase: "installing" } | 
+// Installed: Ranch restarts.
+{ phase: "restarting" };
 
 // Args for `upsert_scheduler`. Saving an existing `scheduler.id` edits it.
 export type UpsertSchedulerArgs = {

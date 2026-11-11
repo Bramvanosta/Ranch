@@ -8,12 +8,17 @@
 //! are handled by the plugin itself; we only orchestrate the user
 //! flow: `check_for_updates` asks the feed, `install_update` downloads,
 //! verifies, replaces the app and restarts it, on the user's click, never
-//! on its own.
+//! on its own. While it runs, `install_update` reports each phase on the
+//! `updater:progress` event, so the window can say how far it has got: a
+//! download of a dozen megabytes on a slow line is otherwise a frozen button.
 //!
 //! The feed (docs/releasing.md, "Auto-updates") is a static manifest, an
 //! asset of the `update-feed` GitHub release: `latest.json` for stable builds,
 //! `rc.json` for pre-releases (`scripts/set-version.mjs` switches the endpoint
 //! at build time).
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -107,6 +112,87 @@ pub struct UpdateCheckResult {
     pub disabled_reason: Option<String>,
 }
 
+/// The event `install_update` reports its progress on.
+pub const PROGRESS_EVENT: &str = "updater:progress";
+
+/// The `updater:progress` event: the phase the install the user started is
+/// in, in order. A failure is not an event: it is the command's error, and the
+/// last phase reported says where it happened.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "phase", rename_all = "camelCase")]
+pub enum UpdateProgressEvent {
+    /// Bytes received so far, and the size of the download when the server
+    /// sent one (`None`: no `Content-Length`, the window shows activity only).
+    Downloading { received: u64, total: Option<u64> },
+    /// Downloaded: the signature is checked against the key built into Ranch.
+    Verifying,
+    /// The signature holds: the new version replaces this one.
+    Installing,
+    /// Installed: Ranch restarts.
+    Restarting,
+}
+
+/// Turns the plugin's per-chunk callback (thousands of calls for one
+/// download) into a report at most every [`DownloadMeter::EVERY`], plus the
+/// one that completes the download, so the window is not flooded with events.
+#[derive(Debug, Default)]
+pub struct DownloadMeter {
+    received: u64,
+    last_report: Option<Instant>,
+}
+
+impl DownloadMeter {
+    /// Often enough for the bar to move smoothly, rarely enough to cost nothing.
+    pub const EVERY: Duration = Duration::from_millis(100);
+
+    /// Count a chunk of `len` bytes; the report to send now, if one is due.
+    pub fn chunk(
+        &mut self,
+        len: usize,
+        total: Option<u64>,
+        now: Instant,
+    ) -> Option<UpdateProgressEvent> {
+        self.received += len as u64;
+        let complete = total.is_some_and(|t| self.received >= t);
+        let due = self
+            .last_report
+            .is_none_or(|at| now.duration_since(at) >= Self::EVERY);
+        if !(due || complete) {
+            return None;
+        }
+        self.last_report = Some(now);
+        Some(UpdateProgressEvent::Downloading {
+            received: self.received,
+            total,
+        })
+    }
+}
+
+/// One install at a time: a second click (or the sidebar and Settings both
+/// asking) would download twice and race to replace the app.
+static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// Held for the whole install; dropping it (the install failed) frees the slot
+/// for a retry. On success the app restarts with it still held.
+#[derive(Debug)]
+pub struct InstallSlot(());
+
+impl InstallSlot {
+    /// `None` while another install runs.
+    pub fn take() -> Option<Self> {
+        INSTALLING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self(()))
+    }
+}
+
+impl Drop for InstallSlot {
+    fn drop(&mut self) {
+        INSTALLING.store(false, Ordering::Release);
+    }
+}
+
 #[cfg(feature = "desktop")]
 fn updater_error(context: &str, e: impl std::fmt::Display) -> RanchErrorDto {
     RanchErrorDto {
@@ -194,7 +280,8 @@ pub async fn check_for_updates(app: tauri::AppHandle) -> Result<UpdateCheckResul
 
 /// Download the update the feed offers, verify its signature against the key
 /// compiled into this app, replace the app and restart. Only ever called from
-/// the user's click. On success this does not return: the app restarts.
+/// the user's click. Each phase is reported on [`PROGRESS_EVENT`]. On success
+/// this does not return: the app restarts.
 #[cfg(feature = "desktop")]
 #[tauri::command]
 #[specta::specta]
@@ -205,7 +292,19 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), RanchErrorDto> 
     if let Some(reason) = unavailable_here(&app) {
         return Err(updater_error("This build cannot update itself", reason));
     }
+    let Some(_slot) = InstallSlot::take() else {
+        return Err(updater_error(
+            "An update is already installing",
+            "wait for it to finish",
+        ));
+    };
+    use tauri::Emitter;
     use tauri_plugin_updater::UpdaterExt;
+    let report = |progress: UpdateProgressEvent| {
+        if let Err(e) = app.emit(PROGRESS_EVENT, progress) {
+            tracing::debug!(error = %e, "update progress not delivered");
+        }
+    };
     let update = app
         .updater()
         .map_err(|e| updater_error("Cannot start the update", e))?
@@ -214,10 +313,35 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), RanchErrorDto> 
         .map_err(|e| updater_error("Cannot read the update feed", e))?
         .ok_or_else(|| updater_error("Nothing to install", "Ranch is up to date"))?;
     tracing::info!(version = %update.version, "installing update");
-    update
-        .download_and_install(|_, _| {}, || {})
+    // `download` checks the signature after its last chunk: an error after
+    // that point is the signature's, not the network's.
+    let downloaded = AtomicBool::new(false);
+    let mut meter = DownloadMeter::default();
+    let bytes = update
+        .download(
+            |len, total| {
+                if let Some(progress) = meter.chunk(len, total, Instant::now()) {
+                    report(progress);
+                }
+            },
+            || {
+                downloaded.store(true, Ordering::Relaxed);
+                report(UpdateProgressEvent::Verifying);
+            },
+        )
         .await
+        .map_err(|e| {
+            if downloaded.load(Ordering::Relaxed) {
+                updater_error("The update's signature could not be verified", e)
+            } else {
+                updater_error("The update could not be downloaded", e)
+            }
+        })?;
+    report(UpdateProgressEvent::Installing);
+    update
+        .install(bytes)
         .map_err(|e| updater_error("The update could not be installed", e))?;
+    report(UpdateProgressEvent::Restarting);
     app.restart()
 }
 
@@ -290,6 +414,77 @@ mod tests {
         assert!(self_update_unavailable(false, true, "linux", false)
             .unwrap()
             .contains("package manager"));
+    }
+
+    #[test]
+    fn the_download_is_reported_at_a_steady_pace_and_on_its_last_chunk() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut meter = DownloadMeter::default();
+        // The first chunk is reported at once: the bar starts moving.
+        assert_eq!(
+            meter.chunk(1_000, Some(10_000), at(0)),
+            Some(UpdateProgressEvent::Downloading {
+                received: 1_000,
+                total: Some(10_000)
+            })
+        );
+        // Chunks within the interval are counted, not reported.
+        assert_eq!(meter.chunk(2_000, Some(10_000), at(40)), None);
+        assert_eq!(meter.chunk(2_000, Some(10_000), at(80)), None);
+        assert_eq!(
+            meter.chunk(1_000, Some(10_000), at(100)),
+            Some(UpdateProgressEvent::Downloading {
+                received: 6_000,
+                total: Some(10_000)
+            })
+        );
+        // The chunk that completes it is reported, due or not.
+        assert_eq!(
+            meter.chunk(4_000, Some(10_000), at(120)),
+            Some(UpdateProgressEvent::Downloading {
+                received: 10_000,
+                total: Some(10_000)
+            })
+        );
+    }
+
+    #[test]
+    fn a_download_of_unknown_size_reports_what_it_received() {
+        let start = Instant::now();
+        let mut meter = DownloadMeter::default();
+        assert_eq!(
+            meter.chunk(512, None, start),
+            Some(UpdateProgressEvent::Downloading {
+                received: 512,
+                total: None
+            })
+        );
+        assert_eq!(meter.chunk(512, None, start), None);
+    }
+
+    #[test]
+    fn the_progress_event_reads_as_the_window_expects() {
+        let downloading = UpdateProgressEvent::Downloading {
+            received: 42,
+            total: None,
+        };
+        assert_eq!(
+            serde_json::to_value(downloading).unwrap(),
+            serde_json::json!({ "phase": "downloading", "received": 42, "total": null })
+        );
+        assert_eq!(
+            serde_json::to_value(UpdateProgressEvent::Verifying).unwrap(),
+            serde_json::json!({ "phase": "verifying" })
+        );
+    }
+
+    #[test]
+    fn one_install_at_a_time_and_a_failed_one_frees_the_slot() {
+        let first = InstallSlot::take().expect("nothing installs yet");
+        assert!(InstallSlot::take().is_none(), "a second install must wait");
+        drop(first);
+        assert!(InstallSlot::take().is_some(), "a retry can start");
     }
 
     // Shared lock: these tests mutate process-wide env.

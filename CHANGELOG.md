@@ -7,6 +7,10 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 <!-- Releasing: add `## [vX.Y.Z] - date` above the version's sections and write ONE short paragraph right
      under it, before the first `###`. That paragraph is what the update dialog shows (scripts/publish-update.mjs). -->
 
+### Added
+
+- **An update shows how far it has got.** After *Install and restart*, the sheet lists each step (download, signature check, install, restart) and marks the one under way; the download shows its megabytes and percent, or what it has received when the server sends no size. If a step fails, the sheet says which one and why, and *Try again* starts over. One install runs at a time, wherever it was started.
+
 ## [v0.5.1] - 2026-11-11
 
 Agent approvals you can set aside. Closing an approval sheet no longer refuses the agent's request: it keeps waiting until you approve or deny it, and requests an agent sends at the same time each wait for their own decision.

@@ -1,9 +1,8 @@
 import { useState } from "react"
 
-import { ConfirmSheet } from "@/components/data/ConfirmSheet"
 import { Button } from "@/components/ui/button"
-import { useInstallUpdate } from "@/data/updater/mutations"
 import { useUpdateCheck } from "@/data/updater/queries"
+import { InstallUpdateSheet } from "@/features/updater"
 import { hasUpdater } from "@/lib/runtime/runtime"
 import { SettingRow, SettingsPane } from "./SettingsPane"
 
@@ -28,7 +27,6 @@ export function UpdatesSection() {
 function DesktopUpdates() {
   const [confirming, setConfirming] = useState(false)
   const query = useUpdateCheck()
-  const install = useInstallUpdate()
   const data = query.data
   const checkedAt = query.dataUpdatedAt
     ? new Date(query.dataUpdatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -83,14 +81,12 @@ function DesktopUpdates() {
           <p className="text-sm whitespace-pre-wrap text-(--text2)">{data.notes}</p>
         </div>
       ) : null}
-      <ConfirmSheet
+      <InstallUpdateSheet
         open={confirming}
         onOpenChange={setConfirming}
+        testId="settings-update-confirm"
         title={`Install Ranch ${data?.version ?? ""} and restart?`}
         description="Ranch downloads the update, checks its signature, replaces itself and restarts. Open windows close."
-        confirmLabel="Install and restart"
-        busy={install.isPending}
-        onConfirm={() => install.mutate()}
       />
     </SettingsPane>
   )

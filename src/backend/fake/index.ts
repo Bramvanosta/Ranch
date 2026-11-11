@@ -15,7 +15,9 @@
  * lists…); a reload starts over. Nothing here talks to Redis.
  *
  * `?preview=empty` shows a first launch (no connection, the wizard);
- * `?preview=full` brings the demo world back.
+ * `?preview=full` brings the demo world back. `?update=0.6.0` offers an
+ * update; *Install and restart* then plays its phases (`?install=unsized`: a
+ * download of unknown size; `?install=fail`: the first try fails).
  *
  * Helpers on `window.ranchPreview`: `requestApproval(tool?)` queues another
  * agent approval, `reset()` rebuilds the world.
@@ -60,7 +62,8 @@ declare global {
 /** Read once, at start: the router drops search params it does not know. */
 
 export function installFakeBackend() {
-  offerUpdate(new URLSearchParams(window.location.search).get("update"))
+  const search = new URLSearchParams(window.location.search)
+  offerUpdate(search.get("update"), search.get("install"))
   // The shim answers the Tauri plugins; app commands come here.
   installTauriShim(async (cmd, args) => {
     const handler = handlers[cmd as CommandName] as ((args: InvokeArgs) => unknown) | undefined
@@ -71,7 +74,7 @@ export function installFakeBackend() {
     // A little latency, so loading states exist.
     await new Promise((resolve) => setTimeout(resolve, 60 + Math.random() * 120))
     try {
-      return structuredClone(handler(args as InvokeArgs))
+      return structuredClone(await handler(args as InvokeArgs))
     } catch (error) {
       if (error instanceof PreviewError) {
         throw { kind: error.kind, message: error.message, docUrl: error.docUrl }
