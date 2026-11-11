@@ -204,4 +204,6 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         .typ::<BulkProgressEvent>()
         // The queue:events event payload.
         .typ::<crate::commands::queues::QueueEventsNotice>()
+        // The updater:progress event payload.
+        .typ::<updater::UpdateProgressEvent>()
 }

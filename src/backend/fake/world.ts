@@ -22,8 +22,17 @@ export function resetWorld() {
 /** The version `?update=0.3.0` on the first URL offers, to review the update flow. */
 export let offeredUpdate: string | null = null
 
-export function offerUpdate(version: string | null) {
+/**
+ * How the offered update installs (`?install=`): `sized`, a download whose
+ * size is known; `unsized`, one sent without a size; `fail`, a first try that
+ * fails at the signature check, then a retry that goes through.
+ */
+export type InstallScenario = "sized" | "unsized" | "fail"
+export let installScenario: InstallScenario = "sized"
+
+export function offerUpdate(version: string | null, install: string | null = null) {
   offeredUpdate = version
+  installScenario = install === "unsized" || install === "fail" ? install : "sized"
 }
 
 // ── helpers over the world ───────────────────────────────────────────────

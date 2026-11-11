@@ -37,4 +37,7 @@ export type CommandData<N extends CommandName> =
 /** The arguments as `invoke` passes them: `{ args }`, or the named parameters. */
 export type InvokeArgs = Record<string, unknown>
 
-export type FakeHandlers = { [N in CommandName]?: (args: InvokeArgs) => CommandData<N> }
+/** A handler answers at once, or later for work that takes a while (the update install). */
+export type FakeHandlers = {
+  [N in CommandName]?: (args: InvokeArgs) => CommandData<N> | Promise<CommandData<N>>
+}

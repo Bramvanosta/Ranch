@@ -7,23 +7,21 @@
  *     a Linux package install): muted "Updates off" with the reason as tooltip.
  *   - **Available**: an "Update available · vX" button. It opens a confirmation
  *     with the release notes; *Install and restart* downloads the update,
- *     verifies its signature, replaces the app and restarts it. Nothing is
- *     ever installed without that click.
+ *     verifies its signature, replaces the app and restarts it, the sheet
+ *     showing each step (`InstallUpdateSheet`). Nothing is ever installed
+ *     without that click.
  *   - **Idle**: nothing rendered (no badge in the common case).
  */
 import { DownloadIcon } from "lucide-react"
 import { useState } from "react"
 import { toast } from "sonner"
 import { useCommandHandler } from "@/commands/handlers"
-import { ConfirmSheet } from "@/components/data/ConfirmSheet"
-import { useInstallUpdate } from "@/data/updater/mutations"
 import { useUpdateCheck } from "@/data/updater/queries"
+import { InstallUpdateSheet } from "./InstallUpdateSheet"
 
 export function UpdaterStatusBadge() {
   const [confirming, setConfirming] = useState(false)
   const query = useUpdateCheck()
-  // The sheet shows what went wrong.
-  const install = useInstallUpdate({ inline: true })
   // Ranch › Check for Updates…: ask now, and say what came back.
   useCommandHandler("app.checkUpdates", () => {
     void query.refetch().then((r) => {
@@ -61,18 +59,12 @@ export function UpdaterStatusBadge() {
         <DownloadIcon className="size-3" aria-hidden="true" />
         Update available · v{version}
       </button>
-      <ConfirmSheet
+      <InstallUpdateSheet
         open={confirming}
-        // While it installs there is nothing to go back to: the app is about to restart.
         onOpenChange={setConfirming}
-        busy={install.isPending}
         testId="updater-confirm"
-        confirmTestId="updater-install"
         title={`Update Ranch to v${version}?`}
         description={`You are on v${currentVersion}. The update is downloaded, its signature is checked, then Ranch restarts in a few seconds. Connections and settings are kept.`}
-        // The sheet stays open to show progress, or what went wrong.
-        onConfirm={() => install.mutate()}
-        confirmLabel={install.isPending ? "Installing" : "Install and restart"}
       >
         {notes ? (
           <pre
@@ -82,16 +74,7 @@ export function UpdaterStatusBadge() {
             {notes}
           </pre>
         ) : null}
-        {install.isError ? (
-          <p
-            role="alert"
-            className="text-sm text-(--state-failed-text)"
-            data-testid="updater-error"
-          >
-            {install.error.message}
-          </p>
-        ) : null}
-      </ConfirmSheet>
+      </InstallUpdateSheet>
     </>
   )
 }

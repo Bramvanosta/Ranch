@@ -30,4 +30,12 @@ describe("ProgressBar", () => {
     render(<ProgressBar value={1} ariaLabel="Thin" />)
     expect(screen.getByRole("progressbar").className).toContain("h-1.5")
   })
+
+  it("shows work of unknown size as under way, with no value to read", () => {
+    render(<ProgressBar value={null} label="4.2 MB received" ariaLabel="Download" />)
+    const bar = screen.getByRole("progressbar", { name: "Download" })
+    expect(bar).not.toHaveAttribute("aria-valuenow")
+    expect((bar.firstElementChild as HTMLElement).className).toContain("animate-progress-sweep")
+    expect(screen.getByText("4.2 MB received")).toBeInTheDocument()
+  })
 })

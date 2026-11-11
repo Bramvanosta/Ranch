@@ -148,6 +148,25 @@ const SHEETS: Array<{ name: string; run: (page: Page) => Promise<void> }> = [
       await page.getByRole("menu").waitFor()
     },
   },
+  // The update install, while it downloads and once it failed.
+  {
+    name: "update, downloading",
+    run: async (page) => {
+      await open(page, "/?update=0.6.0")
+      await page.getByTestId("updater-status-available").click()
+      await page.getByTestId("updater-install").click()
+      await page.getByText(/ of 14 MB$/).waitFor()
+    },
+  },
+  {
+    name: "update, failed",
+    run: async (page) => {
+      await open(page, "/?update=0.6.0&install=fail")
+      await page.getByTestId("updater-status-available").click()
+      await page.getByTestId("updater-install").click()
+      await page.getByTestId("updater-error").waitFor({ timeout: 15_000 })
+    },
+  },
   {
     name: "first launch, the wizard",
     run: async (page) => {

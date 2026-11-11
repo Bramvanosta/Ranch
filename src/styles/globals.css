@@ -64,6 +64,17 @@
     --radius-card: 10px;
     --radius-window: 12px;
     --radius-sheet: 14px;
+
+    /* A bar of work whose size is unknown: a segment that sweeps the track. */
+    --animate-progress-sweep: progress-sweep 1.4s ease-in-out infinite;
+    @keyframes progress-sweep {
+        from {
+            transform: translateX(-100%);
+        }
+        to {
+            transform: translateX(300%);
+        }
+    }
 }
 
 @theme inline {
