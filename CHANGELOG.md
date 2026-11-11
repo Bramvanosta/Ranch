@@ -11,6 +11,10 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 
 - **An update shows how far it has got.** After *Install and restart*, the sheet lists each step (download, signature check, install, restart) and marks the one under way; the download shows its megabytes and percent, or what it has received when the server sends no size. If a step fails, the sheet says which one and why, and *Try again* starts over. One install runs at a time, wherever it was started.
 
+### Fixed
+
+- **After an update on macOS, Ranch comes back under its own Dock icon.** *Install and restart* opened the new version while the old one was still quitting, so it showed up as a second icon beside the one kept in the Dock. Ranch now waits until the old version has quit, then opens the updated app in place. A copy run from the disk image, or from the temporary copy macOS makes of an app that was never moved, says to move Ranch to Applications first instead of failing halfway.
+
 ## [v0.5.1] - 2026-11-11
 
 Agent approvals you can set aside. Closing an approval sheet no longer refuses the agent's request: it keeps waiting until you approve or deny it, and requests an agent sends at the same time each wait for their own decision.

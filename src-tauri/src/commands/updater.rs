@@ -11,6 +11,8 @@
 //! on its own. While it runs, `install_update` reports each phase on the
 //! `updater:progress` event, so the window can say how far it has got: a
 //! download of a dozen megabytes on a slow line is otherwise a frozen button.
+//! On macOS the restart is ours, not Tauri's (`relaunch`), so the
+//! updated app comes back under the Dock tile the old one had.
 //!
 //! The feed (docs/releasing.md, "Auto-updates") is a static manifest, an
 //! asset of the `update-feed` GitHub release: `latest.json` for stable builds,
@@ -74,6 +76,8 @@ pub fn feed_is_configured(updater: Option<&serde_json::Value>) -> bool {
 ///
 ///   - a debug build never loads the updater plugin (`lib.rs`);
 ///   - a build without a real feed does not either;
+///   - on macOS, a bundle the updater cannot replace where it is (the disk
+///     image, App Translocation: `core::app_bundle::location_problem`);
 ///   - on Linux only an AppImage can replace itself (`$APPIMAGE` is set by
 ///     its runtime); a `.deb` / `.rpm` install belongs to the package manager.
 pub fn self_update_unavailable(
@@ -81,12 +85,16 @@ pub fn self_update_unavailable(
     feed_configured: bool,
     os: &str,
     running_as_appimage: bool,
+    bundle_problem: Option<&'static str>,
 ) -> Option<&'static str> {
     if debug_build {
         return Some("Development build: updates are only checked in release builds");
     }
     if !feed_configured {
         return Some("This build has no update feed");
+    }
+    if let Some(problem) = bundle_problem {
+        return Some(problem);
     }
     if os == "linux" && !running_as_appimage {
         return Some("Installed from a package: update Ranch with your package manager");
@@ -210,7 +218,58 @@ fn unavailable_here(app: &tauri::AppHandle) -> Option<&'static str> {
         feed_is_configured(app.config().plugins.0.get("updater")),
         std::env::consts::OS,
         std::env::var_os("APPIMAGE").is_some(),
+        bundle_problem_here(),
     )
+}
+
+/// Why the bundle this process runs from cannot be replaced, on macOS.
+#[cfg(feature = "desktop")]
+fn bundle_problem_here() -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = running_bundle()?;
+        let read_only = crate::core::app_bundle::on_read_only_volume(&bundle);
+        crate::core::app_bundle::location_problem(&bundle, read_only)
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// The `.app` this process runs from, found the way the updater finds the
+/// bundle it replaces, so the relaunch opens exactly what was replaced.
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+fn running_bundle() -> Option<std::path::PathBuf> {
+    let exe = tauri::utils::platform::current_exe().ok()?;
+    let bundle = tauri_plugin_updater::extract_path_from_executable(&exe).ok()?;
+    (bundle.extension() == Some("app".as_ref())).then_some(bundle)
+}
+
+/// Start the updated app. On macOS, from the bundle the updater just replaced
+/// and only once this process is gone (`core::app_bundle::Relaunch`): Tauri's
+/// `restart` opens the new instance while this one still runs, and the Dock
+/// shows it as a second tile beside the pinned one. Elsewhere, and if the
+/// relaunch cannot be handed over, Tauri's restart.
+#[cfg(feature = "desktop")]
+fn relaunch(app: &tauri::AppHandle) -> ! {
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = running_bundle() {
+        let args = std::env::args_os().skip(1).collect();
+        match crate::core::app_bundle::Relaunch::after_this_process(bundle, args).spawn() {
+            Ok(_waiting) => {
+                tracing::info!("update installed: relaunching once this process has exited");
+                app.exit(0);
+                // `exit` asks the event loop to stop and returns; the command
+                // must not answer the window that is about to close.
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(60));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot hand the relaunch over: restarting through Tauri")
+            }
+        }
+    }
+    app.restart()
 }
 
 #[cfg(feature = "desktop")]
@@ -342,7 +401,7 @@ pub async fn install_update(app: tauri::AppHandle) -> Result<(), RanchErrorDto> 
         .install(bytes)
         .map_err(|e| updater_error("The update could not be installed", e))?;
     report(UpdateProgressEvent::Restarting);
-    app.restart()
+    relaunch(&app)
 }
 
 #[cfg(test)]
@@ -401,17 +460,23 @@ mod tests {
     #[test]
     fn a_build_says_why_it_cannot_update_itself() {
         // Release build, real feed, macOS / Windows / an AppImage: it can.
-        assert_eq!(self_update_unavailable(false, true, "macos", false), None);
-        assert_eq!(self_update_unavailable(false, true, "linux", true), None);
+        assert_eq!(
+            self_update_unavailable(false, true, "macos", false, None),
+            None
+        );
+        assert_eq!(
+            self_update_unavailable(false, true, "linux", true, None),
+            None
+        );
         // A debug build never loads the plugin, whatever else is true.
-        assert!(self_update_unavailable(true, true, "macos", false)
+        assert!(self_update_unavailable(true, true, "macos", false, None)
             .unwrap()
             .contains("Development build"));
-        assert!(self_update_unavailable(false, false, "macos", false)
+        assert!(self_update_unavailable(false, false, "macos", false, None)
             .unwrap()
             .contains("no update feed"));
         // A .deb / .rpm install cannot replace itself.
-        assert!(self_update_unavailable(false, true, "linux", false)
+        assert!(self_update_unavailable(false, true, "linux", false, None)
             .unwrap()
             .contains("package manager"));
     }
@@ -485,6 +550,31 @@ mod tests {
         assert!(InstallSlot::take().is_none(), "a second install must wait");
         drop(first);
         assert!(InstallSlot::take().is_some(), "a retry can start");
+    }
+
+    /// Run from the disk image or a translocated copy, Ranch says what to do
+    /// instead of failing halfway through an install it cannot finish.
+    #[test]
+    fn a_bundle_that_cannot_be_replaced_turns_updates_off_with_what_to_do() {
+        use crate::core::app_bundle::{location_problem, READ_ONLY, TRANSLOCATED};
+        use std::path::Path;
+        let dmg = location_problem(Path::new("/Volumes/Ranch/Ranch.app"), true);
+        assert_eq!(
+            self_update_unavailable(false, true, "macos", false, dmg),
+            Some(READ_ONLY)
+        );
+        let translocated = location_problem(
+            Path::new("/private/var/folders/x1/abc/T/AppTranslocation/0F2E/d/Ranch.app"),
+            true,
+        );
+        assert_eq!(
+            self_update_unavailable(false, true, "macos", false, translocated),
+            Some(TRANSLOCATED)
+        );
+        // A development build stays silent about it, as about everything else.
+        assert!(self_update_unavailable(true, true, "macos", false, dmg)
+            .unwrap()
+            .contains("Development build"));
     }
 
     // Shared lock: these tests mutate process-wide env.

@@ -180,6 +180,26 @@ describe("SettingsPage", () => {
     expect(screen.getByTestId("updater-install")).toHaveTextContent("Try again")
   })
 
+  it("Updates says why this copy cannot update itself, and what to do", async () => {
+    mocked.checkForUpdates.mockResolvedValue(
+      ok({
+        available: false,
+        version: null,
+        currentVersion: "0.9.0",
+        disabled: true,
+        disabledReason:
+          "Ranch runs from its disk image: copy it to Applications, open it from there, then update",
+      }),
+    )
+    wrap(<SettingsPage tab="updates" onTab={vi.fn()} />)
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-update-status")).toHaveTextContent(
+        "Ranch runs from its disk image: copy it to Applications, open it from there, then update.",
+      ),
+    )
+    expect(screen.getByRole("button", { name: "Check now" })).toBeDisabled()
+  })
+
   it("Updates in the server image says to pull a newer tag", () => {
     runtime.updater = false
     wrap(<SettingsPage tab="updates" onTab={vi.fn()} />)

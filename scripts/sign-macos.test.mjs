@@ -373,6 +373,14 @@ test("the updater archive (macOS's tar): the app as it ships, links kept, no App
   const list = spawnSync("/usr/bin/tar", ["-tzvf", archive], { encoding: "utf8" }).stdout
   assert.match(list, /Ranch\.app\/Contents\/link -> MacOS\/ranch/)
   assert.doesNotMatch(list, /\/\._|LIBARCHIVE\.xattr/)
+  // The updater drops the first component of every entry and swaps what is
+  // left in at the running app's path: one `Ranch.app/` holding everything,
+  // no `./` before it, nothing beside it.
+  const names = spawnSync("/usr/bin/tar", ["-tzf", archive], { encoding: "utf8" })
+    .stdout.split("\n")
+    .filter(Boolean)
+  assert.ok(names.includes("Ranch.app/Contents/Info.plist"), names.join(", "))
+  assert.deepEqual([...new Set(names.map((n) => n.split("/")[0]))], ["Ranch.app"])
   const x = fresh("archive-x")
   spawnSync("/usr/bin/tar", ["-xzf", archive, "-C", x])
   assert.equal(readlinkSync(join(x, "Ranch.app", "Contents", "link")), "MacOS/ranch")
