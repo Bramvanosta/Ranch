@@ -76,7 +76,7 @@ export const agentsHandlers = {
     return Boolean(enabled)
   },
   decide_pending_approval: (args) => {
-    world.approvals = world.approvals.filter((p) => p.id !== a(args).id)
+    world.approvals = world.approvals.filter((p) => p.id !== a(args).approvalId)
     return "decided"
   },
   list_mcp_activity: (args) => {

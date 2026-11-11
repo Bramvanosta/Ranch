@@ -226,19 +226,71 @@ describe("McpApprovalGate", () => {
     await waitFor(() => expect(screen.queryByTestId("mcp-approval-modal")).not.toBeInTheDocument())
   })
 
-  it("closing the modal denies: silence never approves", async () => {
-    mocked.decidePendingApproval.mockResolvedValue({ status: "ok", data: "decided" })
-    renderGate([approval("a1")])
+  it("closing the modal decides nothing: the request keeps waiting and the next one shows", async () => {
+    renderGate([approval("a1"), approval("a2", { tool: "remove_job" })])
     await screen.findByTestId("mcp-approval-modal")
 
     fireEvent.keyDown(screen.getByTestId("mcp-approval-modal"), { key: "Escape" })
     await waitFor(() =>
-      expect(mocked.decidePendingApproval).toHaveBeenCalledWith({
-        approvalId: "a1",
-        decision: "deny",
-        reason: "dismissed",
-      }),
+      expect(screen.getByTestId("mcp-approval-modal")).toHaveTextContent("wants to remove a job"),
     )
+    expect(mocked.decidePendingApproval).not.toHaveBeenCalled()
+
+    // The last one set aside too: no sheet, still nothing decided.
+    fireEvent.keyDown(screen.getByTestId("mcp-approval-modal"), { key: "Escape" })
+    await waitFor(() => expect(screen.queryByTestId("mcp-approval-modal")).not.toBeInTheDocument())
+    expect(mocked.decidePendingApproval).not.toHaveBeenCalled()
+
+    // Agents › Pending Approvals brings them back, oldest first.
+    act(() => {
+      runCommand("agents.pending")
+    })
+    expect(await screen.findByTestId("mcp-approval-modal")).toHaveTextContent(
+      "wants to retry a job",
+    )
+  })
+
+  it("two requests arriving together each get their own decision", async () => {
+    mocked.decidePendingApproval.mockResolvedValue({ status: "ok", data: "decided" })
+    renderGate([approval("a1", { connectionName: "billing" })])
+    await screen.findByTestId("mcp-approval-modal")
+
+    const both = [
+      approval("a1", { connectionName: "billing" }),
+      approval("a2", { connectionName: "mailer" }),
+    ]
+    mocked.listPendingApprovals.mockResolvedValue({ status: "ok", data: both })
+    pushPending(both)
+    await waitFor(() =>
+      expect(screen.getByTestId("mcp-approval-countdown")).toHaveTextContent(/^1 of 2 · /),
+    )
+    expect(screen.getByTestId("mcp-approval-modal")).toHaveTextContent("billing")
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve once" }))
+    await waitFor(() =>
+      expect(screen.getByTestId("mcp-approval-modal")).toHaveTextContent("mailer"),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }))
+    await waitFor(() => expect(screen.queryByTestId("mcp-approval-modal")).not.toBeInTheDocument())
+
+    expect(mocked.decidePendingApproval.mock.calls).toEqual([
+      [{ approvalId: "a1", decision: "approve", reason: null }],
+      [{ approvalId: "a2", decision: "deny", reason: null }],
+    ])
+  })
+
+  it("a decided request never shows again, even when a list read before the decision lands after it", async () => {
+    mocked.decidePendingApproval.mockResolvedValue({ status: "ok", data: "decided" })
+    renderGate([approval("a1"), approval("a2", { tool: "remove_job" })])
+    await screen.findByTestId("mcp-approval-modal")
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve once" }))
+    await waitFor(() =>
+      expect(screen.getByTestId("mcp-approval-modal")).toHaveTextContent("wants to remove a job"),
+    )
+    pushPending([approval("a1"), approval("a2", { tool: "remove_job" })])
+    expect(screen.getByTestId("mcp-approval-modal")).toHaveTextContent("wants to remove a job")
+    expect(mocked.decidePendingApproval).toHaveBeenCalledTimes(1)
   })
 
   it("a request that times out while open says so and records no decision", async () => {
