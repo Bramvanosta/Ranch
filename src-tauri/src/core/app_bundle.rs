@@ -183,14 +183,15 @@ mod tests {
         assert!(!on_read_only_volume(Path::new("/nowhere/at/all")));
     }
 
-    /// An opener that writes its arguments, one per line, then `done`.
+    /// An opener that writes its arguments, one per line. `printf`, not
+    /// `echo`: dash's `echo` takes the `-n` it is given for an option.
     fn fake_opener(dir: &Path) -> (PathBuf, PathBuf) {
         let log = dir.join("opened");
         let opener = dir.join("open");
         std::fs::write(
             &opener,
             format!(
-                "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > '{}.tmp'\nmv '{}.tmp' '{}'\n",
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{}.tmp'\nmv '{}.tmp' '{}'\n",
                 log.display(),
                 log.display(),
                 log.display()
