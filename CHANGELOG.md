@@ -7,6 +7,10 @@ All notable changes to Ranch are documented here. The format follows [Keep a Cha
 <!-- Releasing: add `## [vX.Y.Z] - date` above the version's sections and write ONE short paragraph right
      under it, before the first `###`. That paragraph is what the update dialog shows (scripts/publish-update.mjs). -->
 
+### Fixed
+
+- **Closing an approval sheet no longer refuses the agent's request.** Esc or a click outside the sheet sets the request aside: it keeps waiting, the next one shows, and Agents › Pending Approvals (⌥⌘A) brings it back. An agent only reads "denied" when you press Deny; a request you never answer comes back as a timeout. Requests sent at the same time each wait for their own decision, and a request you already answered never shows again.
+
 ## [v0.5.0] - 2026-11-05
 
 Valkey, and downloads you can check. Ranch is now tested against **Valkey** as it is against Redis, and names a Valkey server as Valkey, with its own version. Every file of a release comes with a **provenance attestation** that ties it to the run that built it, and the signing keys no longer meet the build's dependencies.

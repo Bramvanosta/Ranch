@@ -302,6 +302,63 @@ async fn deny_reaches_the_agent_with_the_reason() {
 }
 
 #[tokio::test]
+async fn concurrent_requests_wait_side_by_side_and_each_gets_its_own_answer() {
+    let e = env().await;
+    write_heartbeat(&kv(&e.gui)).await.unwrap();
+
+    // The GUI waits until both requests are listed, then answers each one.
+    let gui = e.gui.clone();
+    let human = tokio::spawn(async move {
+        loop {
+            let pending = approval::list_pending(&gui, &kv(&gui)).await.unwrap();
+            if pending.len() == 2 {
+                for p in pending {
+                    let decision = if p.tool == "remove_scheduler" {
+                        ApprovalDecision::Approve
+                    } else {
+                        ApprovalDecision::Deny
+                    };
+                    approval::decide(&gui, &unsealed(), &p.id, decision, None)
+                        .await
+                        .unwrap();
+                }
+                return;
+            }
+            tokio::time::sleep(FAST_POLL).await;
+        }
+    });
+
+    let (settings, connections, sealer) = (kv(&e.mcp), repo(&e.mcp), unsealed());
+    let (removed, paused) = tokio::join!(
+        gate::authorize(
+            &e.mcp,
+            &settings,
+            &connections,
+            &sealer,
+            request(&e, "remove_scheduler", ToolKind::Write),
+        ),
+        gate::authorize(
+            &e.mcp,
+            &settings,
+            &connections,
+            &sealer,
+            request(&e, "pause_queue", ToolKind::Write),
+        ),
+    );
+    human.await.unwrap();
+
+    let grant = removed.unwrap().expect("approved → a grant");
+    assert_eq!(grant.tool(), "remove_scheduler");
+    match paused.unwrap_err() {
+        RanchError::ApprovalDenied { tool, reason } => {
+            assert_eq!(tool, "pause_queue");
+            assert_eq!(reason, None, "denied by the human, not set aside");
+        }
+        other => panic!("expected ApprovalDenied, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn reads_are_free_unless_the_mode_is_all_and_off_asks_nothing() {
     let e = env().await;
     // writes_only + no GUI: a read passes, untouched by the heartbeat.

@@ -31,6 +31,8 @@ interface McpApprovalModalProps {
   expired: boolean
   deciding: boolean
   onDecide: (decision: "approve" | "deny", reason?: string) => void
+  /** Closed without a decision: the request keeps waiting. */
+  onSetAside: () => void
   onAcknowledgeExpired: () => void
 }
 
@@ -38,9 +40,10 @@ interface McpApprovalModalProps {
  * The human's decision on a held agent call (UX: `McpApprovalModal`).
  *
  * Rules: Deny has the default focus, Approve never does. Closing the dialog
- * in any way **denies** (reason "dismissed"): silence must never approve.
- * Everything shown comes from the agent or from Redis and is rendered as
- * plain data.
+ * (Esc, the scrim) **decides nothing**: the request is set aside and keeps
+ * waiting until the human decides or the agent gives up, which it reads as a
+ * timeout, never as a refusal. Silence never approves either. Everything
+ * shown comes from the agent or from Redis and is rendered as plain data.
  */
 export function McpApprovalModal({
   approval,
@@ -49,6 +52,7 @@ export function McpApprovalModal({
   expired,
   deciding,
   onDecide,
+  onSetAside,
   onAcknowledgeExpired,
 }: McpApprovalModalProps) {
   const [reason, setReason] = useState("")
@@ -74,7 +78,7 @@ export function McpApprovalModal({
       onOpenChange={(open) => {
         if (open) return
         if (expired) onAcknowledgeExpired()
-        else if (!deciding) onDecide("deny", "dismissed")
+        else if (!deciding) onSetAside()
       }}
       testId="mcp-approval-modal"
       // Deny is the safe default; OK once nothing is waiting any more.

@@ -19,9 +19,14 @@ function otherModalOpen(): boolean {
 }
 
 /**
- * Mounted once at the root. Shows pending agent requests one at a
- * time, oldest first; raises the window when a new one arrives; tells the
- * human when a request expired under their eyes.
+ * Mounted once at the root. Shows pending agent requests one at a time,
+ * oldest first, each with its own decision; raises the window when a new
+ * one arrives; tells the human when a request expired under their eyes.
+ *
+ * A request the human decided never shows again, even if a list read before
+ * the decision lands after it. A request they closed without deciding is set
+ * aside: it keeps waiting (Agents › Pending Approvals brings it back) and the
+ * next one shows.
  */
 export function McpApprovalGate() {
   const pending = usePendingApprovals()
@@ -36,10 +41,21 @@ export function McpApprovalGate() {
   // (as "expired") after it left the queue.
   const [shown, setShown] = useState<PendingApproval | null>(null)
   const [expired, setExpired] = useState(false)
+  // Never pruned: an id leaves the list before a stale read can bring it
+  // back, and one id per decision is nothing to keep.
   const decidedIds = useRef(new Set<string>())
   const announcedIds = useRef(new Set<string>())
+  const [setAside, setSetAside] = useState<ReadonlySet<string>>(() => new Set())
 
-  const oldest = pending[0] ?? null
+  // Agents › Pending Approvals: everything set aside shows again.
+  const lastShowRequest = useRef(showRequest)
+  useEffect(() => {
+    if (showRequest === lastShowRequest.current) return
+    lastShowRequest.current = showRequest
+    setSetAside(new Set())
+  }, [showRequest])
+
+  const next = pending.find((p) => !decidedIds.current.has(p.id) && !setAside.has(p.id)) ?? null
 
   // Pick what to show.
   useEffect(() => {
@@ -50,7 +66,7 @@ export function McpApprovalGate() {
       }
       return
     }
-    if (!oldest) {
+    if (!next) {
       if (deferred) setDeferred(false)
       return
     }
@@ -60,8 +76,8 @@ export function McpApprovalGate() {
     }
     setDeferred(false)
     setExpired(false)
-    setShown(oldest)
-  }, [pending, oldest, shown, expired, deferred, setDeferred, showRequest])
+    setShown(next)
+  }, [pending, next, shown, expired, deferred, setDeferred, showRequest])
 
   // While held back by another modal, look again regularly.
   useEffect(() => {
@@ -107,17 +123,23 @@ export function McpApprovalGate() {
       expired={expired}
       deciding={decide.isPending}
       onAcknowledgeExpired={close}
+      onSetAside={() => {
+        const id = shown.id
+        setSetAside((old) => new Set(old).add(id))
+        close()
+      }}
       onDecide={(decision, reason) => {
-        decidedIds.current.add(shown.id)
+        const id = shown.id
+        decidedIds.current.add(id)
         decide.mutate(
-          { approvalId: shown.id, decision, reason },
+          { approvalId: id, decision, reason },
           {
             // `alreadyDecided` (it expired a moment ago) is not an error for
             // the human: just move on to the next request.
             onSuccess: close,
             // The hook says the decision was not recorded; the request shows again.
             onError: () => {
-              decidedIds.current.delete(shown.id)
+              decidedIds.current.delete(id)
             },
           },
         )
